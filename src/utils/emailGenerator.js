@@ -66,9 +66,10 @@ export function generateSubjectLine(d) {
   const claim = d.claimNumber || "";
   const vehicle = [d.vehicleYear, (d.vehicleMake || "").toUpperCase(), (d.vehicleModel || "").toUpperCase()].filter(Boolean).join(" ");
   const vin = d.vin || "";
-  const parts = [`Claim ${claim}`];
+  const parts = [claim];
   if (vehicle) parts.push(vehicle);
   if (vin) parts.push(`VIN: ${vin}`);
+  parts.push("INFINITY INSURANCE COMPANY");
   return parts.join(" | ");
 }
 
