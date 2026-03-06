@@ -437,55 +437,7 @@ function postProcess(parsed, rawText) {
   return parsed;
 }
 
-// ── Simple hash for cache key ──────────────────────────────────
-function simpleHash(str) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
-  }
-  return hash.toString(36);
-}
-
-// ── In-memory + sessionStorage parse cache ─────────────────────
-const parseCache = new Map();
-const CACHE_STORAGE_KEY = "hst-parse-cache";
-
-function getCachedResult(rawText) {
-  const key = simpleHash(rawText.trim());
-  // Check in-memory first
-  if (parseCache.has(key)) return parseCache.get(key);
-  // Check sessionStorage
-  try {
-    const stored = JSON.parse(sessionStorage.getItem(CACHE_STORAGE_KEY) || "{}");
-    if (stored[key]) {
-      parseCache.set(key, stored[key]);
-      return stored[key];
-    }
-  } catch {}
-  return null;
-}
-
-function setCachedResult(rawText, result) {
-  const key = simpleHash(rawText.trim());
-  parseCache.set(key, result);
-  try {
-    const stored = JSON.parse(sessionStorage.getItem(CACHE_STORAGE_KEY) || "{}");
-    // Keep cache bounded — only store last 10 results
-    const keys = Object.keys(stored);
-    if (keys.length >= 10) delete stored[keys[0]];
-    stored[key] = result;
-    sessionStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(stored));
-  } catch {}
-}
-
 export async function parseClaimData(rawText) {
-  // Check cache first — exact same paste = instant result, zero API cost
-  const cached = getCachedResult(rawText);
-  if (cached) {
-    console.log("[HST] Cache hit — skipping API call");
-    return cached;
-  }
-
   const settings = getSettings();
   const key = settings.apiKey || import.meta.env.VITE_GEMINI_KEY;
   const model = settings.model || "gemini-2.0-flash";
