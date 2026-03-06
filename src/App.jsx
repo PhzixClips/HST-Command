@@ -11,6 +11,31 @@ import { calcTotalBilled, calcApprovedStorage, calcTotalApproved, calcDisputed, 
 import { getTemplates, saveTemplate, deleteTemplate, getRates, saveRates, addRates, deleteRate, addShopContact, getShopContactsByName, deleteShopContact, getShopReputation } from "./utils/storage.js";
 import { DEFAULT_SHOPS } from "./data/defaultShops.js";
 
+// ─── Date helpers for calendar inputs (MM/DD <-> YYYY-MM-DD) ──
+function mmddToISO(mmdd) {
+  if (!mmdd) return "";
+  const parts = mmdd.replace(/\//g, "-").split("-");
+  if (parts.length < 2) return "";
+  const m = parts[0].padStart(2, "0");
+  const d = parts[1].padStart(2, "0");
+  const y = new Date().getFullYear();
+  return `${y}-${m}-${d}`;
+}
+function isoToMMDD(iso) {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-");
+  return `${m}/${d}`;
+}
+function daysBetweenMMDD(startMMDD, endMMDD) {
+  const y = new Date().getFullYear();
+  const [sm, sd] = startMMDD.split("/").map(Number);
+  const [em, ed] = endMMDD.split("/").map(Number);
+  const s = new Date(y, sm - 1, sd);
+  let e = new Date(y, em - 1, ed);
+  if (e < s) e = new Date(y + 1, em - 1, ed); // wrap year
+  return Math.round((e - s) / 86400000);
+}
+
 // ─── Motivational quotes ───────────────────────────────────────
 const QUOTES = [
   "Success is not final, failure is not fatal — it is the courage to continue that counts.",
@@ -2732,8 +2757,22 @@ export default function App() {
                     </div>
                   </Row>
                   <Row>
-                    <Input label="Coverage Start" value={form.audit.storageStartDate} onChange={v => set("audit.storageStartDate", v)} placeholder="MM/DD" />
-                    <Input label="Coverage End" value={form.audit.storageEndDate} onChange={v => set("audit.storageEndDate", v)} placeholder="MM/DD" />
+                    <Input label="Coverage Start" value={mmddToISO(form.audit.storageStartDate)} onChange={v => {
+                      const mmdd = isoToMMDD(v);
+                      set("audit.storageStartDate", mmdd);
+                      if (mmdd && form.audit.storageEndDate) {
+                        const days = daysBetweenMMDD(mmdd, form.audit.storageEndDate);
+                        if (days > 0) set("audit.approvedStorageDays", days);
+                      }
+                    }} type="date" />
+                    <Input label="Coverage End" value={mmddToISO(form.audit.storageEndDate)} onChange={v => {
+                      const mmdd = isoToMMDD(v);
+                      set("audit.storageEndDate", mmdd);
+                      if (form.audit.storageStartDate && mmdd) {
+                        const days = daysBetweenMMDD(form.audit.storageStartDate, mmdd);
+                        if (days > 0) set("audit.approvedStorageDays", days);
+                      }
+                    }} type="date" />
                   </Row>
                   <Row>
                     <Input label="Approved Tow" value={form.audit.approvedTow} onChange={v => set("audit.approvedTow", v)} type="number" />
