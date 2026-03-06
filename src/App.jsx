@@ -2402,6 +2402,7 @@ export default function App() {
 
   // ── Keyboard shortcuts ─────────────────────────────────────
   const [saveFlash, setSaveFlash] = useState("");
+  const [masterSheetFlash, setMasterSheetFlash] = useState("");
   useEffect(() => {
     const handler = (e) => {
       // Ctrl+S / Cmd+S → Save
@@ -2708,7 +2709,6 @@ export default function App() {
   };
 
   // Master Sheet update — copies row to clipboard so user can paste into Excel
-  const [masterSheetFlash, setMasterSheetFlash] = useState("");
   const handleMasterSheetUpdate = async () => {
     if (!form.claimNumber?.trim() && !form.shopName?.trim()) {
       setMasterSheetFlash("Enter at least a Claim # or Shop Name first.");
