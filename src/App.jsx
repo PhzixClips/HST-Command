@@ -3,7 +3,7 @@ import { T, inputStyle, labelStyle, btnStyle } from "./theme.js";
 import { generateTemplate, generateContactNarrative } from "./utils/templateGenerator.js";
 import { generateShopEmail, generateSubjectLine, generatePendingDocsEmail, generatePendingDocsSubject, PENDING_DOC_TYPES } from "./utils/emailGenerator.js";
 import { parseClaimData, GEMINI_MODELS, getSettings, saveSettings } from "./utils/aiParser.js";
-import { CHARGE_TYPES, isChargeDenied } from "./data/chargeTypes.js";
+import { CHARGE_TYPES, isChargeDenied, getDefaultAmount } from "./data/chargeTypes.js";
 import { LEGAL_CITATIONS } from "./data/legalCitations.js";
 import { calcMitigationCutoff, getDefaultMarketRate, lookupShopRate, isLateNotification, getDeniedFeesSummary } from "./utils/rules.js";
 import { daysBetween, formatMMDD, formatMMDDYYYY, toInputDate, fromInputDate, addBusinessDays } from "./utils/dates.js";
@@ -2233,6 +2233,80 @@ export default function App() {
     setForm(prev => {
       if (JSON.stringify(prev.audit.deniedFees) === JSON.stringify(denied)) return prev;
       return { ...prev, audit: { ...prev.audit, deniedFees: denied } };
+    });
+  }, [form.charges]);
+
+  // ── Auto-approve charges based on charge type rules ─────────
+  useEffect(() => {
+    if (!form.charges || form.charges.length === 0) return;
+    setForm(prev => {
+      const updates = {};
+      const noteUpdates = {};
+      let towTotal = 0, teardownTotal = 0, laborTotal = 0, otherTotal = 0;
+      let towNotes = [], teardownNotes = [], laborNotes = [], otherNotes = [];
+
+      for (const charge of prev.charges) {
+        if (charge.autoDenied || !charge.amount || charge.amount <= 0) continue;
+        const lower = charge.name.toLowerCase();
+        const defaultAmt = getDefaultAmount(charge.name);
+
+        // Determine approved amount
+        let approved;
+        if (defaultAmt === "billed") {
+          approved = charge.amount; // approve at billed price (tow, lien)
+        } else if (typeof defaultAmt === "number") {
+          approved = defaultAmt; // fixed rate (dolly $250, cleanup $250, pre-scan $65, extra equipment $250)
+        } else {
+          approved = charge.amount; // non-denied charges without rules: approve as billed
+        }
+
+        // Route to correct audit field
+        if (lower.includes("tow") || lower === "advance tow") {
+          towTotal += approved;
+          towNotes.push(defaultAmt === "billed" ? "Approved as billed" : charge.name);
+        } else if (lower.includes("teardown")) {
+          teardownTotal += approved;
+          teardownNotes.push("Approved as billed");
+        } else if (lower.includes("labor")) {
+          laborTotal += approved;
+          laborNotes.push("Approved as billed");
+        } else if (lower === "storage") {
+          // Storage handled separately by rate × days
+          continue;
+        } else {
+          // Everything else goes to "Other" (dolly, cleanup, pre-scan, lien, extra equipment, etc.)
+          otherTotal += approved;
+          if (defaultAmt === "billed") {
+            otherNotes.push(`${charge.name}: approved as billed`);
+          } else if (typeof defaultAmt === "number") {
+            otherNotes.push(`${charge.name}: $${defaultAmt}`);
+          } else {
+            otherNotes.push(`${charge.name}: approved as billed`);
+          }
+        }
+      }
+
+      // Only update if values actually changed
+      const auditUpdates = {};
+      if (towTotal > 0 && prev.audit.approvedTow !== towTotal) {
+        auditUpdates.approvedTow = towTotal;
+        auditUpdates.towNote = towNotes.join(", ");
+      }
+      if (teardownTotal > 0 && prev.audit.approvedTeardown !== teardownTotal) {
+        auditUpdates.approvedTeardown = teardownTotal;
+        auditUpdates.teardownNote = teardownNotes.join(", ");
+      }
+      if (laborTotal > 0 && prev.audit.approvedLabor !== laborTotal) {
+        auditUpdates.approvedLabor = laborTotal;
+        auditUpdates.laborNote = laborNotes.join(", ");
+      }
+      if (otherTotal > 0 && prev.audit.approvedOther !== otherTotal) {
+        auditUpdates.approvedOther = otherTotal;
+        auditUpdates.otherNote = otherNotes.join("; ");
+      }
+
+      if (Object.keys(auditUpdates).length === 0) return prev;
+      return { ...prev, audit: { ...prev.audit, ...auditUpdates } };
     });
   }, [form.charges]);
 
