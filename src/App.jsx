@@ -2877,17 +2877,15 @@ export default function App() {
             onUpdateStatus={async (id, newStatus) => {
               // If this is the currently loaded claim, update it in-form too
               if (form.id === id) set("status", newStatus);
-              // Auto-copy master sheet row when marking as completed from dashboard
-              if (newStatus === "completed") {
-                const templates = getTemplates();
-                const claim = templates.find(t => t.id === id);
-                if (claim) {
-                  try {
-                    await copyMasterSheetRow({ ...claim, status: "completed", updatedAt: new Date().toISOString() });
-                    setMasterSheetFlash("Row copied! Paste into master sheet.");
-                    setTimeout(() => setMasterSheetFlash(""), 5000);
-                  } catch (e) { /* silent */ }
-                }
+              // Auto-copy master sheet row on any status change
+              const templates = getTemplates();
+              const claim = templates.find(t => t.id === id);
+              if (claim) {
+                try {
+                  await copyMasterSheetRow({ ...claim, status: newStatus, updatedAt: new Date().toISOString() });
+                  setMasterSheetFlash("Row copied! Paste into master sheet to update status.");
+                  setTimeout(() => setMasterSheetFlash(""), 5000);
+                } catch (e) { /* silent */ }
               }
             }}
           />
@@ -3314,14 +3312,12 @@ export default function App() {
                   <button key={s.key} onClick={async () => {
                     if (handleSaveWithValidation(s.key)) {
                       set("status", s.key);
-                      // Auto-copy master sheet row when marking as completed
-                      if (s.key === "completed") {
-                        try {
-                          await copyMasterSheetRow({ ...form, status: "completed", updatedAt: new Date().toISOString() });
-                          setMasterSheetFlash("Row copied! Paste into master sheet.");
-                          setTimeout(() => setMasterSheetFlash(""), 5000);
-                        } catch (e) { /* silent fail — user can manually copy */ }
-                      }
+                      // Auto-copy master sheet row on any status change
+                      try {
+                        await copyMasterSheetRow({ ...form, status: s.key, updatedAt: new Date().toISOString() });
+                        setMasterSheetFlash("Row copied! Paste into master sheet to update status.");
+                        setTimeout(() => setMasterSheetFlash(""), 5000);
+                      } catch (e) { /* silent fail — user can manually copy */ }
                       setTab("home");
                     }
                   }} style={{

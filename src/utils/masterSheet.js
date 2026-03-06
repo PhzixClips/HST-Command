@@ -1,8 +1,9 @@
 // Master Sheet utility — builds a row from claim data and copies to clipboard
 // so you can click the first cell of an empty row in Excel and paste the whole line
-// Columns match the master sheet: Claim#, Stock#, Date, CV/IV, Carrier, Shop Name,
-// Negotiation Status, Open/Closed, Billed, Approved, Disputed, Total Approved,
-// Control#, Completion Date, Days
+// Columns match the master sheet:
+// A: Claim#, B: Date, C: CV/IV, D: Carrier, E: Shop Name,
+// F: Status, G: Open/Closed, H: Billed, I: Approved, J: Disputed,
+// K: Total Approved, L: IAA Stock#, M: Completion Date, N: Days
 
 import { calcTotalBilled, calcTotalApproved, calcDisputed } from "./calculations.js";
 
@@ -55,23 +56,22 @@ export function buildMasterSheetRow(form) {
     return v === 0 ? "$0.00" : `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
-  // Return ordered values matching master sheet columns A through O
+  // Return ordered values matching master sheet columns A through N
   return [
     form.claimNumber || "",       // A: Claim #
-    form.iaaStock || "",          // B: Stock #
-    assignDate,                   // C: Date
-    coverageType,                 // D: CV/IV
-    carrier,                      // E: Carrier
-    form.shopName || "",          // F: Shop Name
-    negotiationStatus,            // G: Negotiation Status
-    openClosed,                   // H: Open/Closed
-    fmtNum(totalBilled),          // I: Billed
-    fmtNum(approvedCharges),      // J: Approved
-    fmtNum(disputed),             // K: Disputed
-    fmtNum(totalApproved),        // L: Total Approved
-    form.claimNumber || "",       // M: Control #
-    completionDate,               // N: Completion Date
-    days,                         // O: Days
+    assignDate,                   // B: Date
+    coverageType,                 // C: CV/IV
+    carrier,                      // D: Carrier
+    form.shopName || "",          // E: Shop Name
+    negotiationStatus,            // F: Negotiation Status
+    openClosed,                   // G: Open/Closed
+    fmtNum(totalBilled),          // H: Billed
+    fmtNum(approvedCharges),      // I: Approved
+    fmtNum(disputed),             // J: Disputed
+    fmtNum(totalApproved),        // K: Total Approved
+    form.iaaStock || "",          // L: IAA Stock #
+    completionDate,               // M: Completion Date
+    days,                         // N: Days
   ];
 }
 
@@ -102,7 +102,7 @@ export async function copyMasterSheetRow(form) {
 export async function exportToMasterSheet(form) {
   const XLSX = await import("xlsx");
   const values = buildMasterSheetRow(form);
-  const headers = ["Claim #", "Stock #", "Date", "CV/IV", "Carrier", "Shop Name", "Status", "Open/Closed", "Billed", "Approved", "Disputed", "Total Approved", "Control #", "Completion Date", "Days"];
+  const headers = ["Claim #", "Date", "CV/IV", "Carrier", "Shop Name", "Status", "Open/Closed", "Billed", "Approved", "Disputed", "Total Approved", "IAA Stock #", "Completion Date", "Days"];
 
   // Load existing rows from cache
   const cached = localStorage.getItem("hst-master-sheet-rows");
@@ -124,9 +124,9 @@ export async function exportToMasterSheet(form) {
   // Build workbook
   const ws = XLSX.utils.json_to_sheet(rows);
   ws["!cols"] = [
-    { wch: 14 }, { wch: 10 }, { wch: 12 }, { wch: 6 }, { wch: 10 },
-    { wch: 28 }, { wch: 26 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
-    { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 6 },
+    { wch: 14 }, { wch: 12 }, { wch: 6 }, { wch: 10 }, { wch: 28 },
+    { wch: 26 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
+    { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 6 },
   ];
 
   const wb = XLSX.utils.book_new();
