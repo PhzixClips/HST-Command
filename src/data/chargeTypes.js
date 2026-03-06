@@ -6,7 +6,7 @@ export const CHARGE_TYPES = [
   { name: "Advance Tow", denied: false, approveAsBilled: true },
   { name: "Teardown", denied: false },
   { name: "Labor", denied: false },
-  { name: "Extra Equipment", denied: false, defaultAmount: 250 },
+  { name: "Extra Equipment", denied: true },
   { name: "Dolly", denied: false, defaultAmount: 250 },
   { name: "Clean Up", denied: false, defaultAmount: 250 },
   { name: "Pre-Scan", denied: false, defaultAmount: 65 },
@@ -37,7 +37,7 @@ export function isChargeDenied(chargeName) {
     "admin", "forklift", "gate", "impound",
     "estimate", "inspection", "hookup", "hook up",
     "yard", "environmental", "release", "battery",
-    "cover car",
+    "cover car", "extra equipment",
   ].some(keyword => lower.includes(keyword));
 }
 
