@@ -62,3 +62,20 @@ export function fromInputDate(isoStr) {
   const [y, m, d] = isoStr.split("-");
   return `${m}/${d}/${y}`;
 }
+
+// Normalize MM/DD to MM/DD/YYYY by inferring year from a reference date string
+export function normalizeDateWithYear(dateStr, refDateStr) {
+  if (!dateStr) return dateStr;
+  const s = dateStr.trim();
+  // Already has year — return as-is
+  if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}$/.test(s)) return s;
+  if (/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}$/.test(s)) return s;
+  // MM/DD format — add year from reference date
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})$/);
+  if (m) {
+    const ref = parseDate(refDateStr);
+    const year = ref ? ref.getFullYear() : new Date().getFullYear();
+    return `${m[1]}/${m[2]}/${year}`;
+  }
+  return dateStr;
+}

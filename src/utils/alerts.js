@@ -1,5 +1,5 @@
 // Smart Alerts: contextual notifications to speed up claim processing
-import { daysBetween, parseDate } from "./dates.js";
+import { daysBetween, parseDate, normalizeDateWithYear } from "./dates.js";
 
 // Alert levels: "warn" (orange), "info" (blue), "error" (red)
 // Each alert: { level, title, message, key }
@@ -55,10 +55,11 @@ function coverageAlerts(form, alerts) {
 
   // Storage end date is after coverage end
   if (form.chargesBilledThrough && audit.storageEndDate) {
+    const covEndNorm = normalizeDateWithYear(audit.storageEndDate, form.chargesBilledThrough);
     const billedEnd = parseDate(form.chargesBilledThrough);
-    const covEnd = parseDate(audit.storageEndDate);
+    const covEnd = parseDate(covEndNorm);
     if (billedEnd && covEnd && billedEnd > covEnd) {
-      const overDays = daysBetween(audit.storageEndDate, form.chargesBilledThrough);
+      const overDays = daysBetween(covEndNorm, form.chargesBilledThrough);
       alerts.push({
         level: "warn",
         title: "BILLING PAST COVERAGE",
@@ -80,9 +81,10 @@ function coverageAlerts(form, alerts) {
 
   // Coverage start is before arrival (shouldn't normally happen)
   if (audit.storageStartDate && storageStartDate) {
-    const covStart = parseDate(audit.storageStartDate);
+    const covStartNorm = normalizeDateWithYear(audit.storageStartDate, storageStartDate);
+    const covStart = parseDate(covStartNorm);
     const arrival = parseDate(storageStartDate);
-    if (covStart && arrival && covStart < arrival) {
+    if (covStart && arrival && covStart.getTime() < arrival.getTime()) {
       alerts.push({
         level: "warn",
         title: "COVERAGE BEFORE ARRIVAL",

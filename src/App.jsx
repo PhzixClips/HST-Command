@@ -2112,6 +2112,8 @@ export default function App() {
   const [dupWarning, setDupWarning] = useState(null);
   const [shopPrompt, setShopPrompt] = useState(null); // { type, message, data }
   const shopPromptDismissed = useRef(new Set()); // track dismissed prompts per session
+  const [dismissedAlerts, setDismissedAlerts] = useState(new Set());
+  const dismissAlert = (key) => setDismissedAlerts(prev => new Set([...prev, key]));
 
   // Seed rate database with default shops on first load
   useEffect(() => {
@@ -2860,7 +2862,7 @@ export default function App() {
               {claims.map((c, idx) => (
                 <div
                   key={idx}
-                  onClick={() => setActiveClaimIdx(idx)}
+                  onClick={() => { setActiveClaimIdx(idx); setDismissedAlerts(new Set()); }}
                   style={{
                     display: "flex", alignItems: "center", gap: 4,
                     padding: "4px 10px",
@@ -2904,21 +2906,25 @@ export default function App() {
                     DUPLICATE: Claim {dupWarning.claim} was already completed for {dupWarning.shop || "unknown shop"} on {dupWarning.date}
                   </span>
                 </div>
-                <Btn onClick={() => { const t = getTemplates().find(t => t.id === dupWarning.id); if (t) handleLoad(t); }} color={T.amber} small>LOAD IT</Btn>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <Btn onClick={() => { const t = getTemplates().find(t => t.id === dupWarning.id); if (t) handleLoad(t); }} color={T.amber} small>LOAD IT</Btn>
+                  <span onClick={() => setDupWarning(null)} style={{ color: T.amber, fontSize: 14, cursor: "pointer", padding: "0 4px", opacity: 0.7 }} title="Dismiss">&times;</span>
+                </div>
               </div>
             )}
 
             {smartAlerts.length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
-                {smartAlerts.map(a => {
+                {smartAlerts.filter(a => !dismissedAlerts.has(a.key)).map(a => {
                   const color = a.level === "error" ? T.red : a.level === "warn" ? T.orange : T.blue;
                   const icon = a.level === "error" ? "!!" : a.level === "warn" ? "!" : "i";
                   return (
                     <div key={a.key} style={{ background: `${color}15`, border: `1px solid ${color}44`, borderRadius: 6, padding: "10px 14px", display: "flex", alignItems: "center", gap: 8 }}>
                       <span style={{ color, fontSize: 12, fontWeight: 700, minWidth: 16, textAlign: "center" }}>{icon}</span>
-                      <span style={{ color, fontSize: 11, fontFamily: T.font }}>
+                      <span style={{ flex: 1, color, fontSize: 11, fontFamily: T.font }}>
                         <strong>{a.title}:</strong> {a.message}
                       </span>
+                      <span onClick={() => dismissAlert(a.key)} style={{ color, fontSize: 14, cursor: "pointer", padding: "0 4px", opacity: 0.7 }} title="Dismiss">&times;</span>
                     </div>
                   );
                 })}
