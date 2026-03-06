@@ -479,9 +479,7 @@ export async function parseClaimData(rawText) {
   try {
     const parsed = JSON.parse(cleaned);
     // Run deterministic fallbacks for critical fields the AI often misses
-    const result = postProcess(parsed, rawText);
-    setCachedResult(rawText, result);
-    return result;
+    return postProcess(parsed, rawText);
   } catch (e) {
     console.error("Failed to parse AI response:", cleaned);
     throw new Error("AI returned invalid data. Please try again or fill the form manually.");
