@@ -224,6 +224,19 @@ function PastePanel({ onParsed, storedRaw = "" }) {
   const [collapsed, setCollapsed] = useState(false);
   const [peekOpen, setPeekOpen] = useState(false);
 
+  // Reset local state when the parent form is cleared (new claim)
+  const prevStoredRaw = useRef(storedRaw);
+  useEffect(() => {
+    if (prevStoredRaw.current && !storedRaw) {
+      // storedRaw went from something → empty = new/cleared claim
+      setRaw("");
+      setError("");
+      setCollapsed(false);
+      setPeekOpen(false);
+    }
+    prevStoredRaw.current = storedRaw;
+  }, [storedRaw]);
+
   const handleSmartFill = async () => {
     if (!raw.trim()) return;
     setParsing(true);
@@ -2511,6 +2524,7 @@ export default function App() {
   const handleNew = () => {
     setForm(createEmpty());
     setAiFields([]);
+    setDupWarning(null);
   };
 
   // Generate narrative
