@@ -1149,12 +1149,22 @@ function HomeDashboard({ onNewClaim, onLoadClaim, onUpdateStatus }) {
   const ClaimCard = ({ claim }) => {
     const [menuOpen, setMenuOpen] = useState(false);
     const st = CLAIM_STATUSES.find(s => s.key === claim.status) || CLAIM_STATUSES[0];
+    const isFollowUpExpired = claim.followUpAt && new Date(claim.followUpAt).getTime() <= Date.now();
     return (
       <div style={{
-        background: T.cardBg, border: `1px solid ${T.border}`, borderRadius: 6,
+        background: T.cardBg,
+        border: `1px solid ${isFollowUpExpired ? T.danger + "66" : T.border}`,
+        borderRadius: 6,
         padding: "10px 12px", cursor: "pointer", position: "relative",
-        borderLeft: `3px solid ${st.color}`,
+        borderLeft: `3px solid ${isFollowUpExpired ? T.danger : st.color}`,
+        animation: isFollowUpExpired ? "pulseGlow 2s infinite" : "none",
       }}>
+        {isFollowUpExpired && (
+          <div style={{
+            color: T.danger, fontSize: 8, fontWeight: 700, letterSpacing: 1.5,
+            fontFamily: T.font, marginBottom: 4, animation: "pulse 1.5s infinite",
+          }}>FOLLOW UP NOW</div>
+        )}
         <div onClick={() => onLoadClaim(claim)} style={{ marginBottom: 6 }}>
           <div style={{ color: T.text, fontSize: 11, fontWeight: 600, fontFamily: T.font }}>{claim.claimNumber || "No Claim #"}</div>
           <div style={{ color: T.textDim, fontSize: 10, fontFamily: T.font }}>{claim.shopName || "No Shop"}</div>
@@ -1163,6 +1173,9 @@ function HomeDashboard({ onNewClaim, onLoadClaim, onUpdateStatus }) {
           </div>
           {claim.resolution?.approvedCharges > 0 && (
             <div style={{ color: T.accent, fontSize: 10, fontFamily: T.font, marginTop: 3 }}>{fmtDollar(claim.resolution.approvedCharges)}</div>
+          )}
+          {claim.followUpNote && isFollowUpExpired && (
+            <div style={{ color: T.textDim, fontSize: 9, fontFamily: T.font, fontStyle: "italic", marginTop: 2 }}>{claim.followUpNote}</div>
           )}
         </div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1800,6 +1813,95 @@ function ShopContactLog({ shopName }) {
   );
 }
 
+// ─── Follow-Up Toast Notifications ──────────────────────────────
+function FollowUpToasts({ onGoToClaim }) {
+  const [alerts, setAlerts] = useState([]);
+  const dismissedRef = useRef(new Set());
+
+  useEffect(() => {
+    const check = () => {
+      const templates = getTemplates();
+      const now = Date.now();
+      const expired = templates.filter(t =>
+        t.followUpAt &&
+        new Date(t.followUpAt).getTime() <= now &&
+        t.status !== "completed" &&
+        !dismissedRef.current.has(t.id)
+      );
+      setAlerts(expired);
+    };
+    check();
+    const id = setInterval(check, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  const dismiss = (claimId) => {
+    dismissedRef.current.add(claimId);
+    setAlerts(prev => prev.filter(a => a.id !== claimId));
+  };
+
+  // Auto-dismiss after 30 seconds
+  useEffect(() => {
+    if (alerts.length === 0) return;
+    const timers = alerts.map(a =>
+      setTimeout(() => dismiss(a.id), 30000)
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [alerts.map(a => a.id).join(",")]);
+
+  if (alerts.length === 0) return null;
+
+  return (
+    <div style={{
+      position: "fixed", bottom: 20, right: 20, zIndex: 1000,
+      display: "flex", flexDirection: "column", gap: 8, maxWidth: 340,
+    }}>
+      {alerts.slice(0, 3).map((claim) => (
+        <div key={claim.id} style={{
+          background: T.cardBg, border: `1px solid ${T.danger}55`,
+          borderLeft: `4px solid ${T.danger}`,
+          borderRadius: 8, padding: "12px 14px",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+          animation: "slideIn 0.3s ease-out",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+            <div>
+              <div style={{ color: T.danger, fontSize: 9, fontWeight: 700, letterSpacing: 1.5, fontFamily: T.font, marginBottom: 2 }}>
+                FOLLOW UP NOW
+              </div>
+              <div style={{ color: T.text, fontSize: 12, fontWeight: 600, fontFamily: T.font }}>
+                {claim.claimNumber || "No Claim #"}
+              </div>
+              <div style={{ color: T.textDim, fontSize: 10, fontFamily: T.font }}>
+                {claim.shopName || "No Shop"}
+              </div>
+            </div>
+            <button onClick={() => dismiss(claim.id)} style={{
+              background: "none", border: "none", color: T.textDim,
+              cursor: "pointer", fontSize: 16, padding: "0 2px", lineHeight: 1,
+            }}>&times;</button>
+          </div>
+          {claim.followUpNote && (
+            <div style={{
+              color: T.text, fontSize: 10, fontFamily: T.font,
+              background: T.inputBg, padding: "4px 8px", borderRadius: 3,
+              marginBottom: 6, lineHeight: 1.4,
+            }}>
+              {claim.followUpNote}
+            </div>
+          )}
+          <button onClick={() => { onGoToClaim(claim); dismiss(claim.id); }} style={{
+            background: `${T.accent}18`, border: `1px solid ${T.accent}44`,
+            color: T.accent, fontSize: 9, fontWeight: 600, letterSpacing: 1,
+            fontFamily: T.font, padding: "5px 14px", borderRadius: 4,
+            cursor: "pointer", width: "100%",
+          }}>GO TO CLAIM</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Main App ──────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState("home");
@@ -2218,7 +2320,12 @@ export default function App() {
 
   return (
     <div style={{ background: T.bg, minHeight: "100vh", color: T.text, fontFamily: T.font }}>
-      <style>{`@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
+      <style>{`
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        @keyframes pulseGlow { 0%,100% { box-shadow: 0 0 0 0 rgba(224,85,85,0); } 50% { box-shadow: 0 0 8px 2px rgba(224,85,85,0.3); } }
+      `}</style>
+      <FollowUpToasts onGoToClaim={(claim) => { handleLoad(claim); }} />
       {/* Header */}
       <div style={{ borderBottom: `1px solid ${T.border}`, padding: "14px 20px", background: T.cardBg, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
