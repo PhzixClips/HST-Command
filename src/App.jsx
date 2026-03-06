@@ -2114,6 +2114,7 @@ export default function App() {
   const shopPromptDismissed = useRef(new Set()); // track dismissed prompts per session
   const [dismissedAlerts, setDismissedAlerts] = useState(new Set());
   const dismissAlert = (key) => setDismissedAlerts(prev => new Set([...prev, key]));
+  const [alertExpanded, setAlertExpanded] = useState({}); // { [alertKey]: true/false }
 
   // Seed rate database with default shops on first load
   useEffect(() => {
@@ -2918,13 +2919,63 @@ export default function App() {
                 {smartAlerts.filter(a => !dismissedAlerts.has(a.key)).map(a => {
                   const color = a.level === "error" ? T.red : a.level === "warn" ? T.orange : T.blue;
                   const icon = a.level === "error" ? "!!" : a.level === "warn" ? "!" : "i";
+                  const isExpanded = alertExpanded[a.key];
+                  // Zip search results for SEARCH AREA RATES action
+                  const zipResults = (() => {
+                    if (!isExpanded || a.action?.actionKey !== "search-zip-rates") return null;
+                    const addr = form.shopAddress || "";
+                    const zipMatch = addr.match(/\b(\d{5})(?:-\d{4})?\s*$/);
+                    if (!zipMatch) return { error: "No zip code found in shop address. Add the full address to search area rates." };
+                    const zip = zipMatch[1];
+                    const prefix = zip.slice(0, 3);
+                    const allRates = getRates();
+                    const nearby = allRates.filter(r => {
+                      const rZip = (r.address || "").match(/\b(\d{5})(?:-\d{4})?\s*$/);
+                      return rZip && rZip[1].startsWith(prefix) && r.marketRate > 0;
+                    }).sort((a, b) => a.marketRate - b.marketRate);
+                    return { zip, nearby };
+                  })();
                   return (
-                    <div key={a.key} style={{ background: `${color}15`, border: `1px solid ${color}44`, borderRadius: 6, padding: "10px 14px", display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ color, fontSize: 12, fontWeight: 700, minWidth: 16, textAlign: "center" }}>{icon}</span>
-                      <span style={{ flex: 1, color, fontSize: 11, fontFamily: T.font }}>
-                        <strong>{a.title}:</strong> {a.message}
-                      </span>
-                      <span onClick={() => dismissAlert(a.key)} style={{ color, fontSize: 14, cursor: "pointer", padding: "0 4px", opacity: 0.7 }} title="Dismiss">&times;</span>
+                    <div key={a.key}>
+                      <div style={{ background: `${color}15`, border: `1px solid ${color}44`, borderRadius: isExpanded ? "6px 6px 0 0" : 6, padding: "10px 14px", display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ color, fontSize: 12, fontWeight: 700, minWidth: 16, textAlign: "center" }}>{icon}</span>
+                        <span style={{ flex: 1, color, fontSize: 11, fontFamily: T.font }}>
+                          <strong>{a.title}:</strong> {a.message}
+                        </span>
+                        {a.action && (
+                          <Btn onClick={() => setAlertExpanded(prev => ({ ...prev, [a.key]: !prev[a.key] }))} color={color} small>{isExpanded ? "CLOSE" : a.action.label}</Btn>
+                        )}
+                        <span onClick={() => dismissAlert(a.key)} style={{ color, fontSize: 14, cursor: "pointer", padding: "0 4px", opacity: 0.7 }} title="Dismiss">&times;</span>
+                      </div>
+                      {isExpanded && zipResults && (
+                        <div style={{ background: `${color}08`, border: `1px solid ${color}44`, borderTop: "none", borderRadius: "0 0 6px 6px", padding: "10px 14px" }}>
+                          {zipResults.error ? (
+                            <span style={{ color: T.textDim, fontSize: 11, fontFamily: T.font }}>{zipResults.error}</span>
+                          ) : zipResults.nearby.length === 0 ? (
+                            <span style={{ color: T.textDim, fontSize: 11, fontFamily: T.font }}>No shops with rates found in the {zipResults.zip.slice(0, 3)}xx zip code area.</span>
+                          ) : (
+                            <div>
+                              <div style={{ color: T.textDim, fontSize: 9, fontFamily: T.font, letterSpacing: 1, marginBottom: 6 }}>
+                                SHOPS IN {zipResults.zip.slice(0, 3)}xx AREA ({zipResults.nearby.length} found)
+                              </div>
+                              <div style={{ display: "grid", gap: 3, maxHeight: 160, overflowY: "auto" }}>
+                                {zipResults.nearby.map((r, i) => {
+                                  const rZip = (r.address || "").match(/\b(\d{5})(?:-\d{4})?\s*$/);
+                                  return (
+                                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 8px", background: i % 2 === 0 ? `${T.cardBg}` : "transparent", borderRadius: 3 }}>
+                                      <div>
+                                        <span style={{ color: T.text, fontSize: 11, fontFamily: T.font }}>{r.shopName}</span>
+                                        {rZip && <span style={{ color: T.textDim, fontSize: 9, fontFamily: T.font, marginLeft: 6 }}>{rZip[1]}</span>}
+                                      </div>
+                                      <span style={{ color: T.green, fontSize: 11, fontFamily: T.font, fontWeight: 600 }}>${r.marketRate}/day</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
