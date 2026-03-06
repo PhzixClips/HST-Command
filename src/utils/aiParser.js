@@ -115,6 +115,9 @@ CRITICAL EXTRACTION RULES:
   * Pre-Scan
   * Lien
   * Labor
+  **COMBINED LINE ITEMS**: If the shop lumps multiple fees into one line (e.g. "Dolly/Estimate/Cleanup/Yard: $1,000"),
+  you MUST split them into SEPARATE charge entries. Each fee type gets its own entry in the charges array.
+  If the combined amount can't be split evenly, divide it equally among the sub-items.
   Look for charge breakdowns in ALL of these locations in the data:
   * IAA/CSAToday release notes with "Total Advance Charges Need Approval" sections
   * Lines formatted as "ChargeName: $ amount" or "ChargeName: $amount"
@@ -332,6 +335,50 @@ function extractChargesFromText(rawText) {
 }
 
 /**
+ * Split combined charge names like "Dolly/Estimate/Cleanup/Yard" into individual charges.
+ * Divides the total amount equally among sub-items.
+ */
+function splitCombinedCharges(charges) {
+  const result = [];
+  const knownNames = [
+    "storage", "advance tow", "towing", "teardown", "tear down",
+    "administrative fee", "admin fee", "extra equipment",
+    "estimate fee", "estimate", "gate fee", "impound fee",
+    "clean up", "cleanup", "dolly", "pre-scan", "lien",
+    "labor", "environmental fee", "release fee", "hook up",
+    "yard fee", "yard", "battery maintenance", "cover car",
+  ];
+
+  for (const charge of charges) {
+    const name = charge.name || "";
+    // Check if the name contains "/" or "&" separating multiple charge types
+    if (/[\/&]/.test(name) && name.length > 20) {
+      const parts = name.split(/[\/&,]+/).map(p => p.trim()).filter(Boolean);
+      // Only split if we recognize at least 2 of the parts as known charge names
+      const recognized = parts.filter(p =>
+        knownNames.some(kn => p.toLowerCase().includes(kn) || kn.includes(p.toLowerCase()))
+      );
+      if (recognized.length >= 2) {
+        const splitAmt = (charge.amount || 0) / parts.length;
+        for (const part of parts) {
+          // Normalize the part name to a canonical charge name
+          const canonical = knownNames.find(kn =>
+            part.toLowerCase().includes(kn) || kn.includes(part.toLowerCase())
+          );
+          const displayName = canonical
+            ? canonical.split(" ").map(w => w[0].toUpperCase() + w.slice(1)).join(" ")
+            : part;
+          result.push({ ...charge, name: displayName, amount: Math.round(splitAmt * 100) / 100 });
+        }
+        continue;
+      }
+    }
+    result.push(charge);
+  }
+  return result;
+}
+
+/**
  * Merge regex-extracted charges into AI-parsed charges.
  * Only adds charges that the AI missed (by name match).
  * If AI got an amount wrong vs regex, keep the AI amount (user can review).
@@ -374,6 +421,8 @@ function postProcess(parsed, rawText) {
   if (!parsed.iaaStock) {
     parsed.iaaStock = extractIAAStock(rawText, parsed.claimNumber, parsed.vin);
   }
+  // Split any combined charge lines (e.g. "Dolly/Estimate/Cleanup/Yard") into individual charges
+  parsed.charges = splitCombinedCharges(parsed.charges || []);
   // ALWAYS run charge extraction and merge — we can't afford to miss any charges
   const regexResult = extractChargesFromText(rawText);
   parsed.charges = mergeCharges(parsed.charges, regexResult);
