@@ -11,6 +11,7 @@ import { daysBetween, formatMMDD, formatMMDDYYYY, toInputDate, fromInputDate, ad
 import { calcTotalBilled, calcApprovedStorage, calcTotalApproved, calcDisputed, fmt, fmtDollar } from "./utils/calculations.js";
 import { getTemplates, saveTemplate, deleteTemplate, getRates, saveRates, addRates, deleteRate, addShopContact, getShopContactsByName, deleteShopContact, getShopReputation, exportAllData, importAllData } from "./utils/storage.js";
 import { DEFAULT_SHOPS } from "./data/defaultShops.js";
+import { copyMasterSheetRow, exportToMasterSheet } from "./utils/masterSheet.js";
 
 // ─── Date helpers for calendar inputs (MM/DD <-> YYYY-MM-DD) ──
 function mmddToISO(mmdd) {
@@ -218,7 +219,7 @@ function Row({ children, gap = 10 }) {
 }
 
 // ─── Paste Panel ───────────────────────────────────────────────
-function PastePanel({ onParsed, storedRaw = "" }) {
+function PastePanel({ onParsed, storedRaw = "", onUpdateMasterSheet }) {
   const [raw, setRaw] = useState("");
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState("");
@@ -318,6 +319,11 @@ function PastePanel({ onParsed, storedRaw = "" }) {
             <Btn onClick={handleSmartFill} color={T.amber} disabled={!raw.trim() || parsing}>
               {parsing ? "PARSING..." : "SMART FILL"}
             </Btn>
+            {onUpdateMasterSheet && (
+              <Btn onClick={onUpdateMasterSheet} color={T.green}>
+                UPDATE MASTER SHEET
+              </Btn>
+            )}
             <Btn onClick={() => { setRaw(""); setError(""); }} color={T.textDim} small>CLEAR</Btn>
             {error && <span style={{ color: T.red, fontSize: 11, fontFamily: T.font }}>{error}</span>}
           </div>
@@ -2701,6 +2707,26 @@ export default function App() {
     }
   };
 
+  // Master Sheet update — copies row to clipboard so user can paste into Excel
+  const [masterSheetFlash, setMasterSheetFlash] = useState("");
+  const handleMasterSheetUpdate = async () => {
+    if (!form.claimNumber?.trim() && !form.shopName?.trim()) {
+      setMasterSheetFlash("Enter at least a Claim # or Shop Name first.");
+      setTimeout(() => setMasterSheetFlash(""), 4000);
+      return;
+    }
+    // Save first to ensure data is persisted
+    handleSave();
+    try {
+      await copyMasterSheetRow(form);
+      setMasterSheetFlash("Copied to clipboard! Click first cell in Excel and paste.");
+      setTimeout(() => setMasterSheetFlash(""), 5000);
+    } catch (e) {
+      setMasterSheetFlash("Copy failed: " + e.message);
+      setTimeout(() => setMasterSheetFlash(""), 5000);
+    }
+  };
+
   // Load from history — loads into the current claim tab
   const handleLoad = (t) => {
     setForm(t);
@@ -2848,11 +2874,30 @@ export default function App() {
           <HomeDashboard
             onNewClaim={() => { handleNew(); setTab("new"); }}
             onLoadClaim={(t) => { handleLoad(t); }}
-            onUpdateStatus={(id, status) => {
+            onUpdateStatus={async (id, newStatus) => {
               // If this is the currently loaded claim, update it in-form too
-              if (form.id === id) set("status", status);
+              if (form.id === id) set("status", newStatus);
+              // Auto-copy master sheet row when marking as completed from dashboard
+              if (newStatus === "completed") {
+                const templates = getTemplates();
+                const claim = templates.find(t => t.id === id);
+                if (claim) {
+                  try {
+                    await copyMasterSheetRow({ ...claim, status: "completed", updatedAt: new Date().toISOString() });
+                    setMasterSheetFlash("Row copied! Paste into master sheet.");
+                    setTimeout(() => setMasterSheetFlash(""), 5000);
+                  } catch (e) { /* silent */ }
+                }
+              }
             }}
           />
+        )}
+
+        {/* Master sheet flash toast — fixed position, visible on any tab */}
+        {masterSheetFlash && (
+          <div style={{ position: "fixed", bottom: 20, right: 20, background: T.cardBg, border: `1px solid ${T.green}55`, borderRadius: 8, padding: "10px 16px", zIndex: 999, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" }}>
+            <span style={{ color: T.green, fontSize: 12, fontFamily: T.font, fontWeight: 600 }}>{masterSheetFlash}</span>
+          </div>
         )}
 
         {/* ─── NEW TEMPLATE TAB ─── */}
@@ -2896,7 +2941,7 @@ export default function App() {
 
             <FollowUpTimer form={form} onSetField={set} />
 
-            <PastePanel key={form._key} onParsed={handleParsed} storedRaw={form.rawPastedData} />
+            <PastePanel key={form._key} onParsed={handleParsed} storedRaw={form.rawPastedData} onUpdateMasterSheet={handleMasterSheetUpdate} />
 
             {/* Duplicate claim warning */}
             {dupWarning && (
@@ -3266,7 +3311,20 @@ export default function App() {
               )}
               <div style={{ display: "flex", gap: 4, padding: "4px", background: T.inputBg, borderRadius: 6, border: `1px solid ${T.border}` }}>
                 {CLAIM_STATUSES.map(s => (
-                  <button key={s.key} onClick={() => { if (handleSaveWithValidation(s.key)) { set("status", s.key); setTab("home"); } }} style={{
+                  <button key={s.key} onClick={async () => {
+                    if (handleSaveWithValidation(s.key)) {
+                      set("status", s.key);
+                      // Auto-copy master sheet row when marking as completed
+                      if (s.key === "completed") {
+                        try {
+                          await copyMasterSheetRow({ ...form, status: "completed", updatedAt: new Date().toISOString() });
+                          setMasterSheetFlash("Row copied! Paste into master sheet.");
+                          setTimeout(() => setMasterSheetFlash(""), 5000);
+                        } catch (e) { /* silent fail — user can manually copy */ }
+                      }
+                      setTab("home");
+                    }
+                  }} style={{
                     background: form.status === s.key ? `${s.color}22` : "none",
                     border: form.status === s.key ? `1px solid ${s.color}55` : "1px solid transparent",
                     color: form.status === s.key ? s.color : T.textDim,
@@ -3276,6 +3334,12 @@ export default function App() {
                 ))}
               </div>
               <Btn onClick={handleNew} color={T.textDim}>NEW / CLEAR</Btn>
+              {masterSheetFlash && (
+                <span style={{
+                  color: masterSheetFlash.includes("Copied") || masterSheetFlash.includes("copied") ? T.green : T.danger,
+                  fontSize: 11, fontFamily: T.font, fontWeight: 600, letterSpacing: 0.5,
+                }}>{masterSheetFlash}</span>
+              )}
               {form.id && <span style={{ color: T.textDim, fontSize: 10, fontFamily: T.font, alignSelf: "center" }}>Saved: {form.id.slice(0, 8)}</span>}
             </div>
           </div>
