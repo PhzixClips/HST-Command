@@ -11,6 +11,31 @@ import { calcTotalBilled, calcApprovedStorage, calcTotalApproved, calcDisputed, 
 import { getTemplates, saveTemplate, deleteTemplate, getRates, saveRates, addRates, deleteRate, addShopContact, getShopContactsByName, deleteShopContact, getShopReputation } from "./utils/storage.js";
 import { DEFAULT_SHOPS } from "./data/defaultShops.js";
 
+// ─── Date helpers for calendar inputs (MM/DD <-> YYYY-MM-DD) ──
+function mmddToISO(mmdd) {
+  if (!mmdd) return "";
+  const parts = mmdd.replace(/\//g, "-").split("-");
+  if (parts.length < 2) return "";
+  const m = parts[0].padStart(2, "0");
+  const d = parts[1].padStart(2, "0");
+  const y = new Date().getFullYear();
+  return `${y}-${m}-${d}`;
+}
+function isoToMMDD(iso) {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-");
+  return `${m}/${d}`;
+}
+function daysBetweenMMDD(startMMDD, endMMDD) {
+  const y = new Date().getFullYear();
+  const [sm, sd] = startMMDD.split("/").map(Number);
+  const [em, ed] = endMMDD.split("/").map(Number);
+  const s = new Date(y, sm - 1, sd);
+  let e = new Date(y, em - 1, ed);
+  if (e < s) e = new Date(y + 1, em - 1, ed); // wrap year
+  return Math.round((e - s) / 86400000);
+}
+
 // ─── Motivational quotes ───────────────────────────────────────
 const QUOTES = [
   "Success is not final, failure is not fatal — it is the courage to continue that counts.",
@@ -101,6 +126,36 @@ function Input({ label, value, onChange, type = "text", placeholder = "", style:
         placeholder={placeholder}
         style={{ ...inputStyle, fontSize: small ? 11 : 12, padding: small ? "5px 8px" : "8px 10px" }}
       />
+    </div>
+  );
+}
+
+function DatePickerInput({ label, value, onChange }) {
+  const hiddenRef = useRef(null);
+  return (
+    <div style={{ flex: 1, minWidth: 120 }}>
+      {label && <label style={labelStyle}>{label}</label>}
+      <div style={{ position: "relative" }}>
+        <input
+          type="text"
+          value={value ?? ""}
+          onChange={e => onChange(e.target.value)}
+          placeholder="MM/DD"
+          style={{ ...inputStyle, fontSize: 12, padding: "8px 10px", paddingRight: 32 }}
+        />
+        <input
+          ref={hiddenRef}
+          type="date"
+          value={mmddToISO(value)}
+          onChange={e => { if (e.target.value) onChange(isoToMMDD(e.target.value)); }}
+          style={{ position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)", width: 24, height: 24, opacity: 0, cursor: "pointer" }}
+          tabIndex={-1}
+        />
+        <span
+          onClick={() => hiddenRef.current?.showPicker?.()}
+          style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", cursor: "pointer", fontSize: 14, lineHeight: 1, color: T.textDim, userSelect: "none" }}
+        >&#128197;</span>
+      </div>
     </div>
   );
 }
@@ -2732,8 +2787,20 @@ export default function App() {
                     </div>
                   </Row>
                   <Row>
-                    <Input label="Coverage Start" value={form.audit.storageStartDate} onChange={v => set("audit.storageStartDate", v)} placeholder="MM/DD" />
-                    <Input label="Coverage End" value={form.audit.storageEndDate} onChange={v => set("audit.storageEndDate", v)} placeholder="MM/DD" />
+                    <DatePickerInput label="Coverage Start" value={form.audit.storageStartDate} onChange={v => {
+                      set("audit.storageStartDate", v);
+                      if (v && form.audit.storageEndDate) {
+                        const days = daysBetweenMMDD(v, form.audit.storageEndDate);
+                        if (days > 0) set("audit.approvedStorageDays", days);
+                      }
+                    }} />
+                    <DatePickerInput label="Coverage End" value={form.audit.storageEndDate} onChange={v => {
+                      set("audit.storageEndDate", v);
+                      if (form.audit.storageStartDate && v) {
+                        const days = daysBetweenMMDD(form.audit.storageStartDate, v);
+                        if (days > 0) set("audit.approvedStorageDays", days);
+                      }
+                    }} />
                   </Row>
                   <Row>
                     <Input label="Approved Tow" value={form.audit.approvedTow} onChange={v => set("audit.approvedTow", v)} type="number" />
