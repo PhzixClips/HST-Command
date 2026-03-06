@@ -130,6 +130,36 @@ function Input({ label, value, onChange, type = "text", placeholder = "", style:
   );
 }
 
+function DatePickerInput({ label, value, onChange }) {
+  const hiddenRef = useRef(null);
+  return (
+    <div style={{ flex: 1, minWidth: 120 }}>
+      {label && <label style={labelStyle}>{label}</label>}
+      <div style={{ position: "relative" }}>
+        <input
+          type="text"
+          value={value ?? ""}
+          onChange={e => onChange(e.target.value)}
+          placeholder="MM/DD"
+          style={{ ...inputStyle, fontSize: 12, padding: "8px 10px", paddingRight: 32 }}
+        />
+        <input
+          ref={hiddenRef}
+          type="date"
+          value={mmddToISO(value)}
+          onChange={e => { if (e.target.value) onChange(isoToMMDD(e.target.value)); }}
+          style={{ position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)", width: 24, height: 24, opacity: 0, cursor: "pointer" }}
+          tabIndex={-1}
+        />
+        <span
+          onClick={() => hiddenRef.current?.showPicker?.()}
+          style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", cursor: "pointer", fontSize: 14, lineHeight: 1, color: T.textDim, userSelect: "none" }}
+        >&#128197;</span>
+      </div>
+    </div>
+  );
+}
+
 function TextArea({ label, value, onChange, rows = 4, placeholder = "" }) {
   return (
     <div style={{ width: "100%" }}>
@@ -2757,22 +2787,20 @@ export default function App() {
                     </div>
                   </Row>
                   <Row>
-                    <Input label="Coverage Start" value={mmddToISO(form.audit.storageStartDate)} onChange={v => {
-                      const mmdd = isoToMMDD(v);
-                      set("audit.storageStartDate", mmdd);
-                      if (mmdd && form.audit.storageEndDate) {
-                        const days = daysBetweenMMDD(mmdd, form.audit.storageEndDate);
+                    <DatePickerInput label="Coverage Start" value={form.audit.storageStartDate} onChange={v => {
+                      set("audit.storageStartDate", v);
+                      if (v && form.audit.storageEndDate) {
+                        const days = daysBetweenMMDD(v, form.audit.storageEndDate);
                         if (days > 0) set("audit.approvedStorageDays", days);
                       }
-                    }} type="date" />
-                    <Input label="Coverage End" value={mmddToISO(form.audit.storageEndDate)} onChange={v => {
-                      const mmdd = isoToMMDD(v);
-                      set("audit.storageEndDate", mmdd);
-                      if (form.audit.storageStartDate && mmdd) {
-                        const days = daysBetweenMMDD(form.audit.storageStartDate, mmdd);
+                    }} />
+                    <DatePickerInput label="Coverage End" value={form.audit.storageEndDate} onChange={v => {
+                      set("audit.storageEndDate", v);
+                      if (form.audit.storageStartDate && v) {
+                        const days = daysBetweenMMDD(form.audit.storageStartDate, v);
                         if (days > 0) set("audit.approvedStorageDays", days);
                       }
-                    }} type="date" />
+                    }} />
                   </Row>
                   <Row>
                     <Input label="Approved Tow" value={form.audit.approvedTow} onChange={v => set("audit.approvedTow", v)} type="number" />
