@@ -1979,6 +1979,110 @@ export default function App() {
     }
   }, [form.claimNumber, form.id]);
 
+  // ── Auto-fill shop fields from rate database ────────────────
+  const lastAutoFilledShop = useRef("");
+  useEffect(() => {
+    if (!form.shopName || form.shopName.length < 3) return;
+    if (lastAutoFilledShop.current === form.shopName.toLowerCase()) return;
+    const rateDb = getRates();
+    const match = lookupShopRate(form.shopName, rateDb);
+    if (!match) return;
+    lastAutoFilledShop.current = form.shopName.toLowerCase();
+    setForm(prev => {
+      const updates = {};
+      if (!prev.shopEmail && match.email) updates.shopEmail = match.email;
+      if (!prev.shopPhone && match.phone) updates.shopPhone = match.phone;
+      if (!prev.shopAddress && match.address) updates.shopAddress = match.address;
+      if (!prev.shopCity && match.city) updates.shopCity = match.city;
+      if (!prev.shopLicense && match.license) updates.shopLicense = match.license;
+      if (Object.keys(updates).length === 0) return prev;
+      return { ...prev, ...updates };
+    });
+  }, [form.shopName]);
+
+  // ── Auto-fill contact person from most recent shop contact ──
+  const lastAutoFilledContact = useRef("");
+  useEffect(() => {
+    if (!form.shopName || form.shopName.length < 3) return;
+    if (form.contact.contactPerson) return;
+    if (lastAutoFilledContact.current === form.shopName.toLowerCase()) return;
+    lastAutoFilledContact.current = form.shopName.toLowerCase();
+    const contacts = getShopContactsByName(form.shopName);
+    if (contacts.length === 0) return;
+    const mostRecent = contacts[0];
+    if (mostRecent.spokeTo) {
+      set("contact.contactPerson", mostRecent.spokeTo);
+    }
+  }, [form.shopName, form.contact.contactPerson]);
+
+  // ── Auto-calc mitigation cut-off when TL date changes ──────
+  useEffect(() => {
+    if (!form.tlDate) return;
+    const cutoff = calcMitigationCutoff(form.tlDate);
+    if (!cutoff) return;
+    setForm(prev => {
+      if (prev.mitigation.cutOffDate) return prev;
+      return {
+        ...prev,
+        mitigation: {
+          ...prev.mitigation,
+          cutOffDate: cutoff,
+          cutOffExplanation: prev.mitigation.cutOffExplanation || `3 days post-TL notice on ${formatMMDD(form.tlDate)}`,
+        },
+      };
+    });
+  }, [form.tlDate]);
+
+  // ── Auto-fill storage coverage dates from key dates + mitigation ──
+  useEffect(() => {
+    setForm(prev => {
+      const updates = {};
+      if (prev.storageStartDate && !prev.audit.storageStartDate) {
+        updates.storageStartDate = formatMMDD(prev.storageStartDate);
+      }
+      if (prev.mitigation.cutOffDate && !prev.audit.storageEndDate) {
+        updates.storageEndDate = formatMMDD(prev.mitigation.cutOffDate);
+      }
+      const startStr = updates.storageStartDate || prev.audit.storageStartDate;
+      const endStr = updates.storageEndDate || prev.audit.storageEndDate;
+      if (startStr && endStr && !prev.audit.approvedStorageDays) {
+        const days = daysBetween(prev.storageStartDate || startStr, prev.mitigation.cutOffDate || endStr);
+        if (days > 0) updates.approvedStorageDays = days;
+      }
+      if (Object.keys(updates).length === 0) return prev;
+      return { ...prev, audit: { ...prev.audit, ...updates } };
+    });
+  }, [form.storageStartDate, form.mitigation.cutOffDate]);
+
+  // ── Auto-generate contact narrative when data is ready ──────
+  const narrativeGenerated = useRef(false);
+  useEffect(() => {
+    if (narrativeGenerated.current) return;
+    if (!form.shopName || !form.contact.contactPerson) return;
+    if (form.contact.narrative) return;
+    if (!form.audit.approvedStorageRate) return;
+    narrativeGenerated.current = true;
+    const narrative = generateContactNarrative(form);
+    set("contact.narrative", narrative);
+  }, [form.shopName, form.contact.contactPerson, form.audit.approvedStorageRate]);
+
+  // Reset auto-fill refs when form is cleared
+  useEffect(() => {
+    if (!form.shopName && !form.claimNumber) {
+      narrativeGenerated.current = false;
+      lastAutoFilledShop.current = "";
+      lastAutoFilledContact.current = "";
+    }
+  }, [form.shopName, form.claimNumber]);
+
+  // ── Auto-default CSA time to CA timezone ────────────────────
+  useEffect(() => {
+    if (form.resolution.csaTime) return;
+    if (!form.resolution.approvedCharges) return;
+    const caTime = new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit", hour12: true });
+    set("resolution.csaTime", caTime);
+  }, [form.resolution.approvedCharges]);
+
   // Shop database prompts — watch for new/updated shop info
   useEffect(() => {
     if (!form.shopName || form.shopName.length < 3) { setShopPrompt(null); return; }
