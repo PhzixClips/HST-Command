@@ -2150,21 +2150,13 @@ function CustomTemplateModal({ open, onClose, onApply, currentForm }) {
     resolution: parsed.resolution ? { ...currentForm.resolution, ...parsed.resolution } : currentForm.resolution,
   } : currentForm;
 
-  const handleApplyAndComplete = async () => {
-    // Copy master sheet row
+  const handleApplyAndComplete = () => {
     const finalForm = { ...mergedForm, status: "completed", updatedAt: new Date().toISOString() };
-    try {
-      await copyMasterSheetRow(finalForm);
-      setMasterSheetCopied(true);
-    } catch (e) { /* silent */ }
     onApply(parsed, finalForm);
   };
 
-  const handleSkipAndComplete = async () => {
+  const handleSkipAndComplete = () => {
     const finalForm = { ...currentForm, status: "completed", updatedAt: new Date().toISOString() };
-    try {
-      await copyMasterSheetRow(finalForm);
-    } catch (e) { /* silent */ }
     onApply(null, finalForm);
   };
 
@@ -3026,34 +3018,42 @@ export default function App() {
   };
 
   // Handle completion modal result — applies parsed template data (if any) and completes the claim
-  const handleCompletionApply = (parsedData, finalForm) => {
-    if (parsedData) {
-      // Merge parsed template fields into the form
-      setForm(prev => {
-        const merged = { ...prev, ...parsedData };
-        if (parsedData.mitigation) merged.mitigation = { ...prev.mitigation, ...parsedData.mitigation };
-        if (parsedData.audit) merged.audit = { ...prev.audit, ...parsedData.audit };
-        if (parsedData.contact) merged.contact = { ...prev.contact, ...parsedData.contact };
-        if (parsedData.resolution) merged.resolution = { ...prev.resolution, ...parsedData.resolution };
-        merged.status = "completed";
-        merged.updatedAt = new Date().toISOString();
-        // Save the merged form
-        const toSave = {
-          ...merged,
-          id: merged.id || crypto.randomUUID(),
-          generatedTemplate: generateTemplate(merged),
-          generatedEmail: generateShopEmail(merged),
-        };
-        saveTemplate(toSave);
-        return { ...merged, id: toSave.id };
-      });
-    } else {
-      // No template changes — just complete as-is
-      set("status", "completed");
-      handleSave("completed");
-    }
+  const handleCompletionApply = async (parsedData, finalForm) => {
+    // finalForm already has the correctly merged data from the modal
+    // Use it directly for saving and master sheet copy
+    const toSave = {
+      ...finalForm,
+      id: finalForm.id || form.id || crypto.randomUUID(),
+      status: "completed",
+      updatedAt: finalForm.updatedAt || new Date().toISOString(),
+      generatedTemplate: generateTemplate(finalForm),
+      generatedEmail: generateShopEmail(finalForm),
+    };
+
+    // Save to storage
+    saveTemplate(toSave);
+
+    // Update form state with the final merged data
+    setForm({ ...toSave });
+
+    // Close modal first, then copy master sheet row
     setCompletionModal(false);
-    setMasterSheetFlash("Row copied! Paste into master sheet to update status.");
+
+    // Copy master sheet row to clipboard — this is the critical part
+    // Must happen AFTER modal closes so clipboard isn't contested
+    try {
+      await copyMasterSheetRow(toSave);
+      setMasterSheetFlash("Row copied! Paste into master sheet.");
+    } catch (e) {
+      // Fallback: build the row and try again
+      try {
+        const values = buildMasterSheetRow(toSave);
+        await navigator.clipboard.writeText(values.join("\t"));
+        setMasterSheetFlash("Row copied! Paste into master sheet.");
+      } catch (e2) {
+        setMasterSheetFlash("Auto-copy failed. Use the copy button on the dashboard.");
+      }
+    }
     setTimeout(() => setMasterSheetFlash(""), 5000);
     setTab("home");
   };
