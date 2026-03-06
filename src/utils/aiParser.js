@@ -73,10 +73,19 @@ Extract and return a JSON object with these exact fields. Return ONLY valid JSON
   "claimReportDate": "string - MM/DD/YYYY when claim was reported to Kemper",
   "adjusterName": "string - claims adjuster name",
   "insuredName": "string - insured/policyholder name",
-  "lossDescription": "string - brief description of what happened"
+  "lossDescription": "string - brief description of what happened",
+  "appraiserMarketRate": "number - the Fair & Reasonable (F&R) daily storage rate determined by the appraiser's market audit, 0 if not found"
 }
 
 CRITICAL EXTRACTION RULES:
+- **DATA PRIORITY**: When multiple dated notes exist (e.g. appraiser note from 02/26 and IAA/HST note from 03/03), ALWAYS use the MOST RECENT dated note as the primary source for charges and totals. The most recent note has the final, updated billing. Do NOT use older/earlier charge breakdowns when a newer one exists.
+- **Appraiser Market Rate (F&R)**: Search for the appraiser's Fair & Reasonable storage rate. Look for phrases like:
+  * "F&R for area is $XXX" or "F&R rate"
+  * "DAILY STORAGE RATE AVERAGE" followed by a dollar amount
+  * "Fair and Reasonable" or "fair & reasonable" near a daily rate
+  * "market rate" or "market audit" with a dollar amount per day
+  * Any statement by the appraiser about what the fair/reasonable daily storage rate is
+  Return the number (e.g. 250) in the appraiserMarketRate field. If not found, return 0.
 - **IAA Stock Number**: This is a critical field. It is an 8-digit numeric ID (e.g. 44504032, 44538344). Look for it in:
   * CSAToday data sections, often labeled "Stock #", "Stock", "IAA Stock", or "IAA#"
   * Near the claim number and vehicle information in header areas
@@ -203,6 +212,28 @@ function extractVIN(rawText) {
   const vinPattern = /\b([A-HJ-NPR-Z0-9]{17})\b/gi;
   const m = vinPattern.exec(rawText);
   return m ? m[1].toUpperCase() : "";
+}
+
+/**
+ * Deterministic fallback: extract the appraiser's Fair & Reasonable (F&R) daily storage rate.
+ * Looks for patterns like "F&R for area is $250", "DAILY STORAGE RATE AVERAGE: $250", etc.
+ */
+function extractAppraiserRate(rawText) {
+  const patterns = [
+    /F\s*&\s*R\s+(?:for\s+(?:the\s+)?area\s+is|rate\s*[:=]?)\s*\$\s*([\d,]+\.?\d*)/i,
+    /(?:fair\s+(?:&|and)\s+reasonable)\s+(?:rate\s*)?(?:is\s*)?\$\s*([\d,]+\.?\d*)/i,
+    /DAILY\s+STORAGE\s+RATE\s+AVERAGE\s*[:=]?\s*\$\s*([\d,]+\.?\d*)/i,
+    /(?:market\s+(?:rate|audit))\s*[:=]?\s*\$\s*([\d,]+\.?\d*)\s*(?:\/?\s*day|per\s*day)/i,
+    /\$\s*([\d,]+\.?\d*)\s*(?:\/?\s*day|per\s*day)\s*(?:F\s*&\s*R|fair|market)/i,
+  ];
+  for (const pat of patterns) {
+    const m = pat.exec(rawText);
+    if (m) {
+      const rate = parseFloat(m[1].replace(/,/g, ""));
+      if (rate > 0 && rate < 1000) return rate; // sanity check
+    }
+  }
+  return 0;
 }
 
 /**
@@ -349,6 +380,10 @@ function postProcess(parsed, rawText) {
   // Fill in billed-through date if AI missed it
   if (!parsed.chargesBilledThrough && regexResult.billedThrough) {
     parsed.chargesBilledThrough = regexResult.billedThrough;
+  }
+  // Fallback for appraiser F&R rate
+  if (!parsed.appraiserMarketRate || parsed.appraiserMarketRate === 0) {
+    parsed.appraiserMarketRate = extractAppraiserRate(rawText);
   }
   return parsed;
 }

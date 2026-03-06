@@ -2432,12 +2432,17 @@ export default function App() {
     }
 
     // Auto-apply: market rate lookup
-    const rateDb = getRates();
-    const shopRate = lookupShopRate(next.shopName, rateDb);
-    if (shopRate) {
-      next.audit.approvedStorageRate = shopRate.marketRate;
-    } else if (next.shopCity) {
-      next.audit.approvedStorageRate = getDefaultMarketRate(next.shopCity, "CA");
+    // Priority: 1) Appraiser's F&R rate from notes, 2) Shop database, 3) City default
+    if (parsed.appraiserMarketRate && parseFloat(parsed.appraiserMarketRate) > 0) {
+      next.audit.approvedStorageRate = parseFloat(parsed.appraiserMarketRate);
+    } else {
+      const rateDb = getRates();
+      const shopRate = lookupShopRate(next.shopName, rateDb);
+      if (shopRate && shopRate.marketRate > 0) {
+        next.audit.approvedStorageRate = shopRate.marketRate;
+      } else if (next.shopCity) {
+        next.audit.approvedStorageRate = getDefaultMarketRate(next.shopCity, "CA");
+      }
     }
 
     // Auto-apply: storage date range
