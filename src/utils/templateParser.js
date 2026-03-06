@@ -13,28 +13,30 @@ export function parseTemplate(text) {
 
   // ── Header fields ─────────────────────────────────────────
   // Line 0: "SHOPNAME*** HIGH STORAGE NEGOTIATION REVIEW/CLOSING TEMPLATE ***"
+  // Also handles: "SHOPNAME.*** HIGH STORAGE..." or "SHOPNAME*** HIGH STORAGE..."
   const headerLine = lines.find(l => /HIGH STORAGE NEGOTIATION/i.test(l));
   if (headerLine) {
-    const shopMatch = headerLine.match(/^(.+?)\*{3}/);
+    const shopMatch = headerLine.match(/^(.+?)\.*\s*\*{2,}/);
     if (shopMatch) result.shopName = shopMatch[1].trim();
   }
 
-  // Claim number: standalone line that looks like 26XXXXXXXXX
-  const claimLine = lines.find(l => /^26\d{8,11}$/.test(l));
+  // Claim number: standalone line that looks like 26XXXXXXXXX or 24XXXXXXXXX
+  const claimLine = lines.find(l => /^\d{11,13}$/.test(l));
   if (claimLine) result.claimNumber = claimLine.trim();
 
   // IAA Stock
   const iaaLine = lines.find(l => /^IAA\s*Stock\s*:/i.test(l));
   if (iaaLine) result.iaaStock = iaaLine.replace(/^IAA\s*Stock\s*:\s*/i, "").trim();
 
-  // Vehicle info: "IV-YYYY MAKE MODEL"
-  const vehLine = lines.find(l => /^IV-\d{4}/i.test(l));
+  // Vehicle info: "IV-YYYY MAKE MODEL" or "CV-YYYY MAKE MODEL"
+  const vehLine = lines.find(l => /^(IV|CV)-\d{4}/i.test(l));
   if (vehLine) {
-    const vm = vehLine.match(/^IV-(\d{4})\s+(\S+)\s+(.*)/i);
+    const vm = vehLine.match(/^(IV|CV)-(\d{4})\s+(\S+)\s+(.*)/i);
     if (vm) {
-      result.vehicleYear = vm[1];
-      result.vehicleMake = vm[2];
-      result.vehicleModel = vm[3].trim();
+      result.coverageType = vm[1].toUpperCase();
+      result.vehicleYear = vm[2];
+      result.vehicleMake = vm[3];
+      result.vehicleModel = vm[4].trim();
     }
   }
 
@@ -74,13 +76,15 @@ export function parseTemplate(text) {
   if (chargesHeaderIdx >= 0) {
     // Extract billed through date
     const btMatch = lines[chargesHeaderIdx].match(/Billed through\s+(\S+)/i);
-    if (btMatch) result.chargesBilledThrough = btMatch[1];
+    if (btMatch) result.chargesBilledThrough = btMatch[1].replace(/[):]/g, "");
 
     const charges = [];
     for (let i = chargesHeaderIdx + 1; i < lines.length; i++) {
       const line = lines[i];
       if (!line || /^(FILE REVIEW|STORAGE CUT-OFF|KEMPER|CONTACT|RESOLUTION)/i.test(line)) break;
-      if (/^Total Billed/i.test(line)) continue;
+
+      // Skip summary lines — these are NOT individual charges
+      if (/^Total\s*(Billed|Tax|:)/i.test(line)) continue;
 
       // Storage line: "Storage: $5,250.00 @ $175.00/day x 30 days (01/15 – 02/14)"
       const storageMatch = line.match(
@@ -127,8 +131,8 @@ export function parseTemplate(text) {
     for (let i = frIdx + 1; i < lines.length; i++) {
       const line = lines[i];
       if (!line || /^(STORAGE CUT-OFF|KEMPER|CONTACT|RESOLUTION|SHOP CHARGES)/i.test(line)) break;
-      // "MM/DD event description"
-      const evMatch = line.match(/^(\d{1,2}\/\d{1,2})\s+(.+)/);
+      // "MM/DD event description" or "MM/DD/YYYY event description"
+      const evMatch = line.match(/^(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s+(.+)/);
       if (evMatch) {
         events.push({ date: evMatch[1], event: evMatch[2] });
       }
@@ -160,23 +164,39 @@ export function parseTemplate(text) {
   }
 
   // ── Audit (KEMPER WILL COVER) ─────────────────────────────
+  // Known audit field names that map to specific form fields
+  const KNOWN_AUDIT_NAMES = ["storage", "advance tow", "teardown", "labor", "other approved", "denied fees"];
+
   const auditIdx = lines.findIndex(l => /^KEMPER WILL COVER/i.test(l));
   if (auditIdx >= 0) {
     const audit = {};
+    let otherSum = 0;
+    const otherNames = [];
     for (let i = auditIdx + 1; i < lines.length; i++) {
       const line = lines[i];
-      if (!line || /^(CONTACT TO SHOP|RESOLUTION|FILE REVIEW|SHOP CHARGES|STORAGE CUT-OFF)/i.test(line)) break;
+      if (!line || /^(CONTACT TO SHOP|CONTACT:|RESOLUTION|FILE REVIEW|SHOP CHARGES|STORAGE CUT-OFF)/i.test(line)) break;
 
-      // Storage: $3,500.00 (20 days @ $175.00/day - Market Max Audit: 01/15 – 02/04)
+      // Skip summary lines (Total Tax, Total, Total Allowable, Total Approved)
+      if (/^Total\s*(Tax|Allowable|Approved|:)/i.test(line)) continue;
+
+      // Storage with date range: "$4,675.00 @ $275.00/day x 17 days (02/18 – 03/06)"
+      // Handles both "Market Max Audit: 02/18 – 03/06" and plain "(02/18 – 03/06)"
       const storageAuditMatch = line.match(
-        /^Storage\s*:\s*\$\s*([\d,]+\.?\d*)\s*\((\d+)\s*days?\s*@\s*\$\s*([\d,]+\.?\d*)\/day\s*.*?:\s*(\S+)\s*[–\-]\s*(\S+)\)/i
+        /^Storage\s*:\s*\$\s*([\d,]+\.?\d*)\s*@\s*\$\s*([\d,]+\.?\d*)\/day\s*x\s*(\d+)\s*days?\s*\(?(?:.*?[:])?\s*(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*[–\-]\s*(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\)?\s*/i
       );
       if (storageAuditMatch) {
         audit.approvedStorageAmount = parseFloat(storageAuditMatch[1].replace(/,/g, ""));
-        audit.approvedStorageDays = parseInt(storageAuditMatch[2]);
-        audit.approvedStorageRate = parseFloat(storageAuditMatch[3].replace(/,/g, ""));
+        audit.approvedStorageDays = parseInt(storageAuditMatch[3]);
+        audit.approvedStorageRate = parseFloat(storageAuditMatch[2].replace(/,/g, ""));
         audit.storageStartDate = storageAuditMatch[4];
         audit.storageEndDate = storageAuditMatch[5];
+        continue;
+      }
+
+      // Storage without rate/days breakdown (simpler format)
+      const storageSimpleMatch = line.match(/^Storage\s*:\s*\$\s*([\d,]+\.?\d*)/i);
+      if (storageSimpleMatch) {
+        audit.approvedStorageAmount = parseFloat(storageSimpleMatch[1].replace(/,/g, ""));
         continue;
       }
 
@@ -204,11 +224,11 @@ export function parseTemplate(text) {
         continue;
       }
 
-      // Other Approved
+      // Other Approved (explicit)
       const otherMatch = line.match(/^Other Approved\s*:\s*\$\s*([\d,]+\.?\d*)(?:\s*\((.+)\))?/i);
       if (otherMatch) {
-        audit.approvedOther = parseFloat(otherMatch[1].replace(/,/g, ""));
-        if (otherMatch[2]) audit.otherNote = otherMatch[2].trim();
+        otherSum += parseFloat(otherMatch[1].replace(/,/g, ""));
+        if (otherMatch[2]) otherNames.push(otherMatch[2].trim());
         continue;
       }
 
@@ -219,13 +239,31 @@ export function parseTemplate(text) {
         continue;
       }
 
-      // Total Allowable / Total Approved - skip (calculated)
+      // Any other "Name: $amount" line → accumulate into approvedOther
+      // This catches Dolly, Administrative Fee, Hook Up, Yard, Clean Up, etc.
+      const miscMatch = line.match(/^(.+?):\s*\$\s*([\d,]+\.?\d*)/);
+      if (miscMatch) {
+        const name = miscMatch[1].trim();
+        const amt = parseFloat(miscMatch[2].replace(/,/g, "")) || 0;
+        if (amt > 0) {
+          otherSum += amt;
+          otherNames.push(name);
+        }
+        continue;
+      }
     }
+
+    // Roll up miscellaneous items into approvedOther
+    if (otherSum > 0) {
+      audit.approvedOther = otherSum;
+      audit.otherNote = otherNames.join(", ");
+    }
+
     if (Object.keys(audit).length > 0) result.audit = audit;
   }
 
   // ── Contact Narrative ─────────────────────────────────────
-  const contactIdx = lines.findIndex(l => /^CONTACT TO SHOP\s*:/i.test(l));
+  const contactIdx = lines.findIndex(l => /^CONTACT TO SHOP\s*:?/i.test(l));
   if (contactIdx >= 0) {
     const narrativeLines = [];
     for (let i = contactIdx + 1; i < lines.length; i++) {
@@ -248,20 +286,23 @@ export function parseTemplate(text) {
       const csaMatch = line.match(/Approved charges on CSA today @\s*(.+)\*{3}/i);
       if (csaMatch) resolution.csaTime = csaMatch[1].trim();
 
-      const acMatch = line.match(/^Approved Charges\s*:\s*\$\s*([\d,]+\.?\d*)/i);
+      const acMatch = line.match(/^Approved Charges\s*:\s*\$?\s*([\d,]+\.?\d*)/i);
       if (acMatch) resolution.approvedCharges = parseFloat(acMatch[1].replace(/,/g, ""));
 
-      const dcMatch = line.match(/^Disputed Charges\s*:\s*\$\s*([\d,]+\.?\d*)/i);
+      const dcMatch = line.match(/^Disputed Charges\s*:\s*\$?\s*([\d,]+\.?\d*)/i);
       if (dcMatch) resolution.disputedCharges = parseFloat(dcMatch[1].replace(/,/g, ""));
 
-      const redMatch = line.match(/^Reductions\s*:\s*\$\s*([\d,]+\.?\d*)/i);
+      const redMatch = line.match(/^Reductions\s*:\s*\$?\$?\s*([\d,]+\.?\d*)/i);
       if (redMatch) resolution.reductions = parseFloat(redMatch[1].replace(/,/g, ""));
 
-      const dedMatch = line.match(/^Deduction\s*:\s*\$\s*([\d,]+\.?\d*)/i);
+      const dedMatch = line.match(/^Deduction\s*:\s*\$?\s*([\d,]+\.?\d*)/i);
       if (dedMatch) resolution.deduction = parseFloat(dedMatch[1].replace(/,/g, ""));
 
-      const dispMatch = line.match(/^Dispatch IAA for\s*\$\s*([\d,]+\.?\d*)/i);
+      const dispMatch = line.match(/^Dispatch IAA for\s*\$?\s*([\d,]+\.?\d*)/i);
       if (dispMatch) resolution.dispatchAmount = parseFloat(dispMatch[1].replace(/,/g, ""));
+
+      // "no deductions" or "_no deductions"
+      if (/no deductions/i.test(line)) resolution.deduction = 0;
 
       const custMatch = line.match(/^CUSTOMER NOTIFIED\s*:\s*(.+)/i);
       if (custMatch) resolution.customerNotified = custMatch[1].trim();
@@ -269,10 +310,14 @@ export function parseTemplate(text) {
       const denLetterMatch = line.match(/^DENIAL LETTER SENT.*:\s*(.+)/i);
       if (denLetterMatch) resolution.denialLetterSent = denLetterMatch[1].trim();
 
+      // Also handle "VEHICLE LOCATION: IAA STOCK-XXXXX"
+      const vehLocMatch = line.match(/^VEHICLE LOCATION\s*:\s*IAA\s*STOCK[-–]?\s*(\d+)/i);
+      if (vehLocMatch && !result.iaaStock) result.iaaStock = vehLocMatch[1];
+
       const ownerMatch = line.match(/^OWNER\/COMPANY RETAINED\s*:\s*(.+)/i);
       if (ownerMatch) resolution.ownerRetained = ownerMatch[1].trim();
 
-      const commMatch = line.match(/^COMMENTS\s*:\s*\*{6}(.*?)\*{6}/i);
+      const commMatch = line.match(/^COMMENTS\s*:\s*\*{2,}(.*?)\*{2,}/i);
       if (commMatch) resolution.comments = commMatch[1].trim();
     }
     if (Object.keys(resolution).length > 0) result.resolution = resolution;
