@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { T, inputStyle, labelStyle, btnStyle } from "./theme.js";
 import { generateTemplate, generateContactNarrative } from "./utils/templateGenerator.js";
-import { generateShopEmail, generateSubjectLine } from "./utils/emailGenerator.js";
+import { generateShopEmail, generateSubjectLine, generatePendingDocsEmail, generatePendingDocsSubject, PENDING_DOC_TYPES } from "./utils/emailGenerator.js";
 import { parseClaimData, GEMINI_MODELS, getSettings, saveSettings } from "./utils/aiParser.js";
 import { CHARGE_TYPES, isChargeDenied } from "./data/chargeTypes.js";
 import { LEGAL_CITATIONS } from "./data/legalCitations.js";
 import { calcMitigationCutoff, getDefaultMarketRate, lookupShopRate, isLateNotification, getDeniedFeesSummary } from "./utils/rules.js";
 import { daysBetween, formatMMDD, formatMMDDYYYY, toInputDate, fromInputDate, addBusinessDays } from "./utils/dates.js";
 import { calcTotalBilled, calcApprovedStorage, calcTotalApproved, calcDisputed, fmt, fmtDollar } from "./utils/calculations.js";
-import { getTemplates, saveTemplate, deleteTemplate, getRates, saveRates, addRates, deleteRate, addShopContact, getShopContactsByName, deleteShopContact } from "./utils/storage.js";
+import { getTemplates, saveTemplate, deleteTemplate, getRates, saveRates, addRates, deleteRate, addShopContact, getShopContactsByName, deleteShopContact, getShopReputation } from "./utils/storage.js";
 import { DEFAULT_SHOPS } from "./data/defaultShops.js";
 
 // ─── Motivational quotes ───────────────────────────────────────
@@ -82,6 +82,9 @@ function createEmpty() {
     insuredName: "", adjusterName: "", lossDescription: "",
     tlDate: "", storageStartDate: "", claimReportDate: "",
     rawPastedData: "",
+    pendingDocs: [],
+    followUpAt: null,
+    followUpNote: "",
     status: "pending",
   };
 }
@@ -529,6 +532,267 @@ function FileReviewEditor({ entries, onChange, rawText = "" }) {
   );
 }
 
+// ─── Pending Documents Panel ────────────────────────────────────
+function PendingDocsPanel({ form, onSetField }) {
+  const [selectedDocIds, setSelectedDocIds] = useState(
+    () => (form.pendingDocs || []).map(d => d.id)
+  );
+  const [copied, setCopied] = useState(false);
+  const [copiedSubject, setCopiedSubject] = useState(false);
+  const [tone, setTone] = useState("firm");
+
+  // Sync from form when it changes externally
+  useEffect(() => {
+    const formIds = (form.pendingDocs || []).map(d => d.id);
+    if (JSON.stringify(formIds) !== JSON.stringify(selectedDocIds)) {
+      setSelectedDocIds(formIds);
+    }
+  }, [form.pendingDocs]);
+
+  const toggleDoc = (id) => {
+    const next = selectedDocIds.includes(id)
+      ? selectedDocIds.filter(x => x !== id)
+      : [...selectedDocIds, id];
+    setSelectedDocIds(next);
+    const docs = next.map(did => PENDING_DOC_TYPES.find(dt => dt.id === did)).filter(Boolean);
+    if (onSetField) onSetField("pendingDocs", docs);
+  };
+
+  const selectedDocs = selectedDocIds.map(id => PENDING_DOC_TYPES.find(dt => dt.id === id)).filter(Boolean);
+  const emailText = generatePendingDocsEmail(form, selectedDocs, tone);
+  const subjectLine = generatePendingDocsSubject(form);
+
+  const doCopy = async (str, setter) => {
+    try { await navigator.clipboard.writeText(str); } catch {
+      const ta = document.createElement("textarea"); ta.value = str;
+      document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+    }
+    setter(true); setTimeout(() => setter(false), 2000);
+  };
+
+  const handleOutlookOpen = () => {
+    const allEmails = (form.shopEmail || "").split(/[;,]\s*/).filter(Boolean);
+    const to = allEmails[0] || "";
+    const cc = allEmails.slice(1).join(",");
+    const subject = encodeURIComponent(subjectLine);
+    const body = encodeURIComponent(emailText);
+    const ccParam = cc ? `&cc=${encodeURIComponent(cc)}` : "";
+    window.open(`mailto:${to}?subject=${subject}&body=${body}${ccParam}`, "_blank");
+  };
+
+  return (
+    <div style={{ background: T.cardBg, border: `1px solid ${T.border}`, borderRadius: 6 }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderBottom: `1px solid ${T.border}` }}>
+        <span style={{ color: T.amber, fontSize: 10, fontWeight: 600, letterSpacing: 1.5, fontFamily: T.font }}>PENDING DOCUMENTS</span>
+        <div style={{ display: "flex", gap: 4 }}>
+          <Btn onClick={handleOutlookOpen} color={T.purple} small disabled={selectedDocs.length === 0}>OUTLOOK</Btn>
+          <Btn onClick={() => doCopy(emailText, setCopied)} color={copied ? T.green : T.amber} small disabled={selectedDocs.length === 0}>
+            {copied ? "COPIED!" : "COPY"}
+          </Btn>
+        </div>
+      </div>
+
+      {/* Doc checkboxes */}
+      <div style={{ padding: "10px 12px", borderBottom: `1px solid ${T.border}` }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {PENDING_DOC_TYPES.map(dt => {
+            const checked = selectedDocIds.includes(dt.id);
+            return (
+              <label key={dt.id} style={{
+                display: "flex", alignItems: "center", gap: 4, cursor: "pointer",
+                padding: "3px 8px", borderRadius: 3,
+                background: checked ? `${T.amber}18` : "transparent",
+                border: `1px solid ${checked ? T.amber + "55" : T.border}`,
+                transition: "all 0.15s",
+              }}>
+                <input type="checkbox" checked={checked} onChange={() => toggleDoc(dt.id)} style={{ accentColor: T.amber }} />
+                <span style={{ color: checked ? T.amber : T.textDim, fontSize: 9, fontFamily: T.font }}>{dt.label}</span>
+              </label>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
+          <span style={{ color: T.textDim, fontSize: 9, fontFamily: T.font, letterSpacing: 1 }}>TONE</span>
+          {[{ key: "firm", label: "FIRM" }, { key: "friendly", label: "FRIENDLY" }].map(t => (
+            <button key={t.key} onClick={() => setTone(t.key)} style={{
+              background: tone === t.key ? `${T.accent}22` : "none",
+              border: `1px solid ${tone === t.key ? T.accent : T.border}`,
+              color: tone === t.key ? T.accent : T.textDim,
+              fontFamily: T.font, fontSize: 8, letterSpacing: 1, padding: "3px 8px",
+              borderRadius: 3, cursor: "pointer",
+            }}>{t.label}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* Subject line */}
+      {selectedDocs.length > 0 && (
+        <div style={{ padding: "6px 12px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ color: T.textDim, fontSize: 9, fontFamily: T.font, letterSpacing: 1, minWidth: 36 }}>SUBJ</span>
+          <div onClick={() => doCopy(subjectLine, setCopiedSubject)} title="Click to copy" style={{
+            flex: 1, background: T.bg, border: `1px solid ${T.border}`, borderRadius: 3,
+            padding: "4px 8px", color: copiedSubject ? T.green : T.blue, fontFamily: T.font,
+            fontSize: 10, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>{copiedSubject ? "Copied!" : subjectLine}</div>
+        </div>
+      )}
+
+      {/* Email preview */}
+      {selectedDocs.length > 0 ? (
+        <div style={{ padding: "12px 14px", maxHeight: 300, overflowY: "auto" }}>
+          <div style={{ color: T.text, fontFamily: T.font, fontSize: 12, lineHeight: 1.8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {emailText}
+          </div>
+        </div>
+      ) : (
+        <div style={{ padding: "20px 14px", textAlign: "center", color: T.textDim, fontSize: 10, fontFamily: T.font }}>
+          Select documents above to generate email
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Follow-Up Timer ────────────────────────────────────────────
+function FollowUpTimer({ form, onSetField }) {
+  const [timeLeft, setTimeLeft] = useState(null);
+  const DEFAULT_HOURS = 4;
+
+  // Countdown tick
+  useEffect(() => {
+    if (!form.followUpAt) { setTimeLeft(null); return; }
+    const tick = () => {
+      const diff = new Date(form.followUpAt).getTime() - Date.now();
+      setTimeLeft(diff > 0 ? diff : 0);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [form.followUpAt]);
+
+  const startTimer = (hours) => {
+    const target = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+    if (onSetField) {
+      onSetField("followUpAt", target);
+    }
+  };
+
+  const clearTimer = () => {
+    if (onSetField) {
+      onSetField("followUpAt", null);
+      onSetField("followUpNote", "");
+    }
+  };
+
+  const isActive = form.followUpAt && timeLeft !== null && timeLeft > 0;
+  const isExpired = form.followUpAt && timeLeft !== null && timeLeft <= 0;
+
+  const formatTime = (ms) => {
+    if (ms <= 0) return "00:00:00";
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  };
+
+  const bgColor = isExpired ? T.danger : isActive ? T.accent : T.textDim;
+
+  return (
+    <div style={{
+      background: `${bgColor}08`, border: `1px solid ${bgColor}33`,
+      borderRadius: 6, padding: "8px 12px", marginBottom: 10,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ color: bgColor, fontSize: 9, fontWeight: 600, letterSpacing: 1.5, fontFamily: T.font }}>FOLLOW UP</span>
+          {isActive && (
+            <span style={{ color: T.accent, fontSize: 16, fontWeight: 700, fontFamily: T.mono, letterSpacing: 1 }}>
+              {formatTime(timeLeft)}
+            </span>
+          )}
+          {isExpired && (
+            <span style={{ color: T.danger, fontSize: 12, fontWeight: 700, fontFamily: T.font, letterSpacing: 1, animation: "pulse 1.5s infinite" }}>
+              FOLLOW UP NOW
+            </span>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          {!isActive && !isExpired && (
+            <>
+              <Btn onClick={() => startTimer(1)} color={T.textDim} small>1H</Btn>
+              <Btn onClick={() => startTimer(2)} color={T.textDim} small>2H</Btn>
+              <Btn onClick={() => startTimer(DEFAULT_HOURS)} color={T.accent} small>4H</Btn>
+              <Btn onClick={() => startTimer(8)} color={T.textDim} small>8H</Btn>
+            </>
+          )}
+          {(isActive || isExpired) && (
+            <>
+              <Btn onClick={clearTimer} color={T.textDim} small>CLEAR</Btn>
+              {isExpired && <Btn onClick={() => startTimer(DEFAULT_HOURS)} color={T.accent} small>SNOOZE 4H</Btn>}
+            </>
+          )}
+        </div>
+      </div>
+      {(isActive || isExpired) && (
+        <input
+          value={form.followUpNote || ""}
+          onChange={e => onSetField && onSetField("followUpNote", e.target.value)}
+          placeholder="Follow-up note (e.g. waiting on tow bill...)"
+          style={{ ...inputStyle, fontSize: 10, padding: "4px 8px", marginTop: 6 }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Shop Reputation Badge ──────────────────────────────────────
+function ShopReputationBadge({ shopName }) {
+  const [rep, setRep] = useState(null);
+
+  useEffect(() => {
+    setRep(getShopReputation(shopName));
+  }, [shopName]);
+
+  // Completely hidden if no history
+  if (!rep) return null;
+
+  const reductionColor = rep.avgReduction > 50 ? T.danger : rep.avgReduction > 25 ? T.amber : T.green;
+
+  return (
+    <div style={{
+      borderTop: `1px solid ${T.border}`, marginTop: 10, paddingTop: 10,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+        <span style={{ color: T.textDim, fontSize: 9, letterSpacing: 1, fontFamily: T.font }}>SHOP HISTORY</span>
+      </div>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ color: T.accent, fontSize: 16, fontWeight: 700, fontFamily: T.font }}>{rep.claimCount}</div>
+          <div style={{ color: T.textDim, fontSize: 8, letterSpacing: 1, fontFamily: T.font }}>CLAIMS</div>
+        </div>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ color: reductionColor, fontSize: 16, fontWeight: 700, fontFamily: T.font }}>{rep.avgReduction}%</div>
+          <div style={{ color: T.textDim, fontSize: 8, letterSpacing: 1, fontFamily: T.font }}>AVG REDUCTION</div>
+        </div>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ color: T.green, fontSize: 14, fontWeight: 700, fontFamily: T.font }}>{fmtDollar(rep.totalSaved)}</div>
+          <div style={{ color: T.textDim, fontSize: 8, letterSpacing: 1, fontFamily: T.font }}>TOTAL SAVED</div>
+        </div>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ color: T.text, fontSize: 14, fontWeight: 700, fontFamily: T.font }}>{fmtDollar(rep.totalApproved)}</div>
+          <div style={{ color: T.textDim, fontSize: 8, letterSpacing: 1, fontFamily: T.font }}>TOTAL PAID</div>
+        </div>
+      </div>
+      {rep.avgReduction > 40 && (
+        <div style={{ color: T.amber, fontSize: 9, fontFamily: T.font, marginTop: 6 }}>
+          This shop has been negotiated {rep.claimCount} time{rep.claimCount > 1 ? "s" : ""} with an average {rep.avgReduction}% reduction — expect pushback.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Dual Preview (Template + Email) ───────────────────────────
 const TONES = [
   { key: "firm", label: "FIRM", color: T.accent, desc: "First contact" },
@@ -552,7 +816,7 @@ function DualPreview({ form, onSetField }) {
   const templateText = generateTemplate(form);
   const emailText = generateShopEmail(form, tone, selectedCitations);
   const subjectLine = generateSubjectLine(form);
-  const text = tab === "template" ? templateText : emailText;
+  const text = tab === "template" ? templateText : tab === "email" ? emailText : "";
 
   const toggleCitation = (id) => {
     setSelectedCitationIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -616,6 +880,7 @@ function DualPreview({ form, onSetField }) {
           {[
             { key: "template", label: "Internal Template" },
             { key: "email", label: "Shop Email" },
+            { key: "docs", label: `Pending Docs${(form.pendingDocs || []).length > 0 ? ` (${form.pendingDocs.length})` : ""}` },
           ].map(t => (
             <button
               key={t.key}
@@ -644,9 +909,11 @@ function DualPreview({ form, onSetField }) {
               OUTLOOK
             </Btn>
           )}
-          <Btn onClick={handleCopy} color={copied ? T.green : T.amber} small>
-            {copied ? "COPIED!" : "COPY"}
-          </Btn>
+          {tab !== "docs" && (
+            <Btn onClick={handleCopy} color={copied ? T.green : T.amber} small>
+              {copied ? "COPIED!" : "COPY"}
+            </Btn>
+          )}
         </div>
       </div>
 
@@ -755,20 +1022,26 @@ function DualPreview({ form, onSetField }) {
       )}
 
       {/* Preview content */}
-      <div style={{ flex: 1, overflow: "auto", padding: "16px 18px" }}>
-        <div style={{
-          color: T.text,
-          fontFamily: T.font,
-          fontSize: 13,
-          lineHeight: 1.8,
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word",
-          margin: 0,
-          letterSpacing: 0.15,
-        }}>
-          {text}
+      {tab === "docs" ? (
+        <div style={{ flex: 1, overflow: "auto" }}>
+          <PendingDocsPanel form={form} onSetField={onSetField} />
         </div>
-      </div>
+      ) : (
+        <div style={{ flex: 1, overflow: "auto", padding: "16px 18px" }}>
+          <div style={{
+            color: T.text,
+            fontFamily: T.font,
+            fontSize: 13,
+            lineHeight: 1.8,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+            margin: 0,
+            letterSpacing: 0.15,
+          }}>
+            {text}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -876,12 +1149,22 @@ function HomeDashboard({ onNewClaim, onLoadClaim, onUpdateStatus }) {
   const ClaimCard = ({ claim }) => {
     const [menuOpen, setMenuOpen] = useState(false);
     const st = CLAIM_STATUSES.find(s => s.key === claim.status) || CLAIM_STATUSES[0];
+    const isFollowUpExpired = claim.followUpAt && new Date(claim.followUpAt).getTime() <= Date.now();
     return (
       <div style={{
-        background: T.cardBg, border: `1px solid ${T.border}`, borderRadius: 6,
+        background: T.cardBg,
+        border: `1px solid ${isFollowUpExpired ? T.danger + "66" : T.border}`,
+        borderRadius: 6,
         padding: "10px 12px", cursor: "pointer", position: "relative",
-        borderLeft: `3px solid ${st.color}`,
+        borderLeft: `3px solid ${isFollowUpExpired ? T.danger : st.color}`,
+        animation: isFollowUpExpired ? "pulseGlow 2s infinite" : "none",
       }}>
+        {isFollowUpExpired && (
+          <div style={{
+            color: T.danger, fontSize: 8, fontWeight: 700, letterSpacing: 1.5,
+            fontFamily: T.font, marginBottom: 4, animation: "pulse 1.5s infinite",
+          }}>FOLLOW UP NOW</div>
+        )}
         <div onClick={() => onLoadClaim(claim)} style={{ marginBottom: 6 }}>
           <div style={{ color: T.text, fontSize: 11, fontWeight: 600, fontFamily: T.font }}>{claim.claimNumber || "No Claim #"}</div>
           <div style={{ color: T.textDim, fontSize: 10, fontFamily: T.font }}>{claim.shopName || "No Shop"}</div>
@@ -890,6 +1173,9 @@ function HomeDashboard({ onNewClaim, onLoadClaim, onUpdateStatus }) {
           </div>
           {claim.resolution?.approvedCharges > 0 && (
             <div style={{ color: T.accent, fontSize: 10, fontFamily: T.font, marginTop: 3 }}>{fmtDollar(claim.resolution.approvedCharges)}</div>
+          )}
+          {claim.followUpNote && isFollowUpExpired && (
+            <div style={{ color: T.textDim, fontSize: 9, fontFamily: T.font, fontStyle: "italic", marginTop: 2 }}>{claim.followUpNote}</div>
           )}
         </div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1527,6 +1813,95 @@ function ShopContactLog({ shopName }) {
   );
 }
 
+// ─── Follow-Up Toast Notifications ──────────────────────────────
+function FollowUpToasts({ onGoToClaim }) {
+  const [alerts, setAlerts] = useState([]);
+  const dismissedRef = useRef(new Set());
+
+  useEffect(() => {
+    const check = () => {
+      const templates = getTemplates();
+      const now = Date.now();
+      const expired = templates.filter(t =>
+        t.followUpAt &&
+        new Date(t.followUpAt).getTime() <= now &&
+        t.status !== "completed" &&
+        !dismissedRef.current.has(t.id)
+      );
+      setAlerts(expired);
+    };
+    check();
+    const id = setInterval(check, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  const dismiss = (claimId) => {
+    dismissedRef.current.add(claimId);
+    setAlerts(prev => prev.filter(a => a.id !== claimId));
+  };
+
+  // Auto-dismiss after 30 seconds
+  useEffect(() => {
+    if (alerts.length === 0) return;
+    const timers = alerts.map(a =>
+      setTimeout(() => dismiss(a.id), 30000)
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [alerts.map(a => a.id).join(",")]);
+
+  if (alerts.length === 0) return null;
+
+  return (
+    <div style={{
+      position: "fixed", bottom: 20, right: 20, zIndex: 1000,
+      display: "flex", flexDirection: "column", gap: 8, maxWidth: 340,
+    }}>
+      {alerts.slice(0, 3).map((claim) => (
+        <div key={claim.id} style={{
+          background: T.cardBg, border: `1px solid ${T.danger}55`,
+          borderLeft: `4px solid ${T.danger}`,
+          borderRadius: 8, padding: "12px 14px",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+          animation: "slideIn 0.3s ease-out",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+            <div>
+              <div style={{ color: T.danger, fontSize: 9, fontWeight: 700, letterSpacing: 1.5, fontFamily: T.font, marginBottom: 2 }}>
+                FOLLOW UP NOW
+              </div>
+              <div style={{ color: T.text, fontSize: 12, fontWeight: 600, fontFamily: T.font }}>
+                {claim.claimNumber || "No Claim #"}
+              </div>
+              <div style={{ color: T.textDim, fontSize: 10, fontFamily: T.font }}>
+                {claim.shopName || "No Shop"}
+              </div>
+            </div>
+            <button onClick={() => dismiss(claim.id)} style={{
+              background: "none", border: "none", color: T.textDim,
+              cursor: "pointer", fontSize: 16, padding: "0 2px", lineHeight: 1,
+            }}>&times;</button>
+          </div>
+          {claim.followUpNote && (
+            <div style={{
+              color: T.text, fontSize: 10, fontFamily: T.font,
+              background: T.inputBg, padding: "4px 8px", borderRadius: 3,
+              marginBottom: 6, lineHeight: 1.4,
+            }}>
+              {claim.followUpNote}
+            </div>
+          )}
+          <button onClick={() => { onGoToClaim(claim); dismiss(claim.id); }} style={{
+            background: `${T.accent}18`, border: `1px solid ${T.accent}44`,
+            color: T.accent, fontSize: 9, fontWeight: 600, letterSpacing: 1,
+            fontFamily: T.font, padding: "5px 14px", borderRadius: 4,
+            cursor: "pointer", width: "100%",
+          }}>GO TO CLAIM</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Main App ──────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState("home");
@@ -1945,6 +2320,12 @@ export default function App() {
 
   return (
     <div style={{ background: T.bg, minHeight: "100vh", color: T.text, fontFamily: T.font }}>
+      <style>{`
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        @keyframes pulseGlow { 0%,100% { box-shadow: 0 0 0 0 rgba(224,85,85,0); } 50% { box-shadow: 0 0 8px 2px rgba(224,85,85,0.3); } }
+      `}</style>
+      <FollowUpToasts onGoToClaim={(claim) => { handleLoad(claim); }} />
       {/* Header */}
       <div style={{ borderBottom: `1px solid ${T.border}`, padding: "14px 20px", background: T.cardBg, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
@@ -2029,6 +2410,8 @@ export default function App() {
               >+</span>
             </div>
 
+            <FollowUpTimer form={form} onSetField={set} />
+
             <PastePanel onParsed={handleParsed} storedRaw={form.rawPastedData} />
 
             {/* Duplicate claim warning */}
@@ -2100,6 +2483,7 @@ export default function App() {
                       <Btn onClick={handleShopPromptDismiss} color={T.textDim} small>NO</Btn>
                     </div>
                   )}
+                  <ShopReputationBadge shopName={form.shopName} />
                 </Section>
 
                 {/* Charges */}
