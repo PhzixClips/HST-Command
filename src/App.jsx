@@ -11,7 +11,8 @@ import { daysBetween, formatMMDD, formatMMDDYYYY, toInputDate, fromInputDate, ad
 import { calcTotalBilled, calcApprovedStorage, calcTotalApproved, calcDisputed, fmt, fmtDollar } from "./utils/calculations.js";
 import { getTemplates, saveTemplate, deleteTemplate, getRates, saveRates, addRates, deleteRate, addShopContact, getShopContactsByName, deleteShopContact, getShopReputation, exportAllData, importAllData } from "./utils/storage.js";
 import { DEFAULT_SHOPS } from "./data/defaultShops.js";
-import { copyMasterSheetRow, exportToMasterSheet } from "./utils/masterSheet.js";
+import { copyMasterSheetRow, exportToMasterSheet, buildMasterSheetRow } from "./utils/masterSheet.js";
+import { parseTemplate } from "./utils/templateParser.js";
 
 // ─── Date helpers for calendar inputs (MM/DD <-> YYYY-MM-DD) ──
 function mmddToISO(mmdd) {
@@ -2104,6 +2105,302 @@ function FollowUpToasts({ onGoToClaim }) {
   );
 }
 
+// ─── Custom Template Modal ─────────────────────────────────────
+// Shown when completing a claim — asks if user has an updated template
+// (e.g. from a sticky note edit) and lets them paste it in.
+function CustomTemplateModal({ open, onClose, onApply, currentForm }) {
+  const [step, setStep] = useState("ask"); // "ask" | "paste" | "review"
+  const [pastedText, setPastedText] = useState("");
+  const [parsed, setParsed] = useState(null);
+  const [parseError, setParseError] = useState("");
+  const [masterSheetCopied, setMasterSheetCopied] = useState(false);
+  const [templateCopied, setTemplateCopied] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setStep("ask");
+      setPastedText("");
+      setParsed(null);
+      setParseError("");
+      setMasterSheetCopied(false);
+      setTemplateCopied(false);
+    }
+  }, [open]);
+
+  if (!open) return null;
+
+  const handleParse = () => {
+    setParseError("");
+    const result = parseTemplate(pastedText);
+    if (!result) {
+      setParseError("Could not extract any fields from the pasted text. Make sure it follows the template format.");
+      return;
+    }
+    setParsed(result);
+    setStep("review");
+  };
+
+  // Merge parsed data into current form for preview
+  const mergedForm = parsed ? {
+    ...currentForm,
+    ...parsed,
+    mitigation: parsed.mitigation ? { ...currentForm.mitigation, ...parsed.mitigation } : currentForm.mitigation,
+    audit: parsed.audit ? { ...currentForm.audit, ...parsed.audit } : currentForm.audit,
+    contact: parsed.contact ? { ...currentForm.contact, ...parsed.contact } : currentForm.contact,
+    resolution: parsed.resolution ? { ...currentForm.resolution, ...parsed.resolution } : currentForm.resolution,
+  } : currentForm;
+
+  const handleApplyAndComplete = async () => {
+    // Copy master sheet row
+    const finalForm = { ...mergedForm, status: "completed", updatedAt: new Date().toISOString() };
+    try {
+      await copyMasterSheetRow(finalForm);
+      setMasterSheetCopied(true);
+    } catch (e) { /* silent */ }
+    onApply(parsed, finalForm);
+  };
+
+  const handleSkipAndComplete = async () => {
+    const finalForm = { ...currentForm, status: "completed", updatedAt: new Date().toISOString() };
+    try {
+      await copyMasterSheetRow(finalForm);
+    } catch (e) { /* silent */ }
+    onApply(null, finalForm);
+  };
+
+  // Build master sheet row for display
+  const masterSheetValues = buildMasterSheetRow({ ...mergedForm, status: "completed", updatedAt: new Date().toISOString() });
+  const masterSheetHeaders = ["Claim #", "Date", "CV/IV", "Carrier", "Shop Name", "Status", "Open/Closed", "Billed", "Approved", "Disputed", "Total Approved", "IAA Stock #", "Completion Date", "Days"];
+  const masterSheetTSV = masterSheetValues.join("\t");
+
+  const overlayStyle = {
+    position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+    background: "rgba(0,0,0,0.7)", zIndex: 2000,
+    display: "flex", alignItems: "center", justifyContent: "center",
+    backdropFilter: "blur(4px)",
+  };
+
+  const modalStyle = {
+    background: T.cardBg, border: `1px solid ${T.border}`,
+    borderRadius: 12, padding: 24, width: "min(600px, 92vw)",
+    maxHeight: "85vh", overflow: "auto",
+    boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
+  };
+
+  const fieldList = parsed ? Object.entries(parsed).filter(([k]) =>
+    !["charges", "fileReview", "mitigation", "audit", "contact", "resolution"].includes(k)
+  ) : [];
+
+  return (
+    <div style={overlayStyle} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={modalStyle}>
+        {/* ── Step 1: Ask ── */}
+        {step === "ask" && (
+          <>
+            <div style={{ color: T.green, fontSize: 10, fontWeight: 700, letterSpacing: 1.5, fontFamily: T.font, marginBottom: 8 }}>
+              COMPLETING CLAIM
+            </div>
+            <div style={{ color: T.text, fontSize: 14, fontWeight: 600, fontFamily: T.font, marginBottom: 6 }}>
+              Do you have an updated template?
+            </div>
+            <div style={{ color: T.textDim, fontSize: 11, fontFamily: T.font, marginBottom: 20, lineHeight: 1.5 }}>
+              If you edited the template on a sticky note or made changes outside the app, paste the updated version here and we'll populate the dashboard with your changes.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setStep("paste")} style={{
+                ...btnStyle, background: `${T.accent}22`, border: `1px solid ${T.accent}55`,
+                color: T.accent, flex: 1, padding: "10px 16px", fontSize: 11,
+              }}>
+                YES — PASTE UPDATED TEMPLATE
+              </button>
+              <button onClick={handleSkipAndComplete} style={{
+                ...btnStyle, background: `${T.green}18`, border: `1px solid ${T.green}44`,
+                color: T.green, flex: 1, padding: "10px 16px", fontSize: 11,
+              }}>
+                NO — COMPLETE AS IS
+              </button>
+            </div>
+            <button onClick={onClose} style={{
+              background: "none", border: "none", color: T.textDim,
+              fontSize: 10, fontFamily: T.font, cursor: "pointer",
+              marginTop: 12, width: "100%", textAlign: "center",
+            }}>Cancel</button>
+          </>
+        )}
+
+        {/* ── Step 2: Paste ── */}
+        {step === "paste" && (
+          <>
+            <div style={{ color: T.accent, fontSize: 10, fontWeight: 700, letterSpacing: 1.5, fontFamily: T.font, marginBottom: 8 }}>
+              PASTE UPDATED TEMPLATE
+            </div>
+            <div style={{ color: T.textDim, fontSize: 11, fontFamily: T.font, marginBottom: 12, lineHeight: 1.4 }}>
+              Paste your edited template below. We'll extract the updated fields and show you what changed before applying.
+            </div>
+            <textarea
+              value={pastedText}
+              onChange={e => setPastedText(e.target.value)}
+              placeholder="Paste your updated template here..."
+              autoFocus
+              style={{
+                ...inputStyle, width: "100%", minHeight: 200, resize: "vertical",
+                fontFamily: "monospace", fontSize: 10, lineHeight: 1.5,
+                boxSizing: "border-box",
+              }}
+            />
+            {parseError && (
+              <div style={{ color: T.danger, fontSize: 10, fontFamily: T.font, marginTop: 6 }}>
+                {parseError}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button onClick={() => setStep("ask")} style={{
+                ...btnStyle, background: "none", border: `1px solid ${T.border}`,
+                color: T.textDim, padding: "8px 16px", fontSize: 11,
+              }}>Back</button>
+              <button onClick={handleParse} disabled={!pastedText.trim()} style={{
+                ...btnStyle, background: `${T.accent}22`, border: `1px solid ${T.accent}55`,
+                color: pastedText.trim() ? T.accent : T.textDim,
+                flex: 1, padding: "8px 16px", fontSize: 11,
+                opacity: pastedText.trim() ? 1 : 0.5,
+              }}>
+                PARSE & REVIEW
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* ── Step 3: Review & Confirm ── */}
+        {step === "review" && parsed && (
+          <>
+            <div style={{ color: T.green, fontSize: 10, fontWeight: 700, letterSpacing: 1.5, fontFamily: T.font, marginBottom: 8 }}>
+              TEMPLATE PARSED — REVIEW CHANGES
+            </div>
+            <div style={{ color: T.textDim, fontSize: 11, fontFamily: T.font, marginBottom: 12, lineHeight: 1.4 }}>
+              The following fields were extracted from your pasted template. Confirm to update the dashboard and complete the claim.
+            </div>
+
+            {/* Extracted simple fields */}
+            {fieldList.length > 0 && (
+              <div style={{ background: T.inputBg, borderRadius: 6, padding: 10, marginBottom: 10, border: `1px solid ${T.border}` }}>
+                <div style={{ color: T.textDim, fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 6, fontFamily: T.font }}>
+                  UPDATED FIELDS
+                </div>
+                {fieldList.map(([key, val]) => (
+                  <div key={key} style={{ display: "flex", gap: 8, marginBottom: 3, fontSize: 11, fontFamily: T.font }}>
+                    <span style={{ color: T.textDim, minWidth: 120 }}>{key}:</span>
+                    <span style={{ color: T.text }}>{String(val)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Charges */}
+            {parsed.charges && (
+              <div style={{ background: T.inputBg, borderRadius: 6, padding: 10, marginBottom: 10, border: `1px solid ${T.border}` }}>
+                <div style={{ color: T.textDim, fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 6, fontFamily: T.font }}>
+                  CHARGES ({parsed.charges.length})
+                </div>
+                {parsed.charges.map((c, i) => (
+                  <div key={i} style={{ fontSize: 11, fontFamily: T.font, color: T.text, marginBottom: 2 }}>
+                    {c.name}: ${(c.amount || 0).toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                    {c.rate ? ` @ $${c.rate}/day x ${c.days} days` : ""}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Audit */}
+            {parsed.audit && (
+              <div style={{ background: T.inputBg, borderRadius: 6, padding: 10, marginBottom: 10, border: `1px solid ${T.border}` }}>
+                <div style={{ color: T.textDim, fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 6, fontFamily: T.font }}>
+                  APPROVED AMOUNTS (AUDIT)
+                </div>
+                {Object.entries(parsed.audit).map(([k, v]) => (
+                  <div key={k} style={{ display: "flex", gap: 8, marginBottom: 2, fontSize: 11, fontFamily: T.font }}>
+                    <span style={{ color: T.textDim, minWidth: 140 }}>{k}:</span>
+                    <span style={{ color: T.text }}>{typeof v === "number" ? `$${v.toLocaleString("en-US", { minimumFractionDigits: 2 })}` : String(v)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Master Sheet Preview */}
+            <div style={{ background: T.inputBg, borderRadius: 6, padding: 10, marginBottom: 12, border: `1px solid ${T.green}33` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <div style={{ color: T.green, fontSize: 9, fontWeight: 700, letterSpacing: 1, fontFamily: T.font }}>
+                  MASTER SHEET ROW
+                </div>
+                <button onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(masterSheetTSV);
+                    setMasterSheetCopied(true);
+                    setTimeout(() => setMasterSheetCopied(false), 3000);
+                  } catch {}
+                }} style={{
+                  ...btnStyle, background: masterSheetCopied ? `${T.green}22` : `${T.accent}18`,
+                  border: `1px solid ${masterSheetCopied ? T.green : T.accent}44`,
+                  color: masterSheetCopied ? T.green : T.accent,
+                  fontSize: 9, padding: "3px 10px",
+                }}>
+                  {masterSheetCopied ? "COPIED!" : "COPY ROW"}
+                </button>
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <div style={{ display: "flex", gap: 0, fontSize: 9, fontFamily: "monospace" }}>
+                  {masterSheetHeaders.map((h, i) => (
+                    <div key={h} style={{ minWidth: 70, padding: "2px 4px", borderRight: `1px solid ${T.border}` }}>
+                      <div style={{ color: T.textDim, fontSize: 8, marginBottom: 1 }}>{h}</div>
+                      <div style={{ color: T.text, whiteSpace: "nowrap" }}>{masterSheetValues[i] || "—"}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Generated template preview + copy */}
+            <div style={{ background: T.inputBg, borderRadius: 6, padding: 10, marginBottom: 12, border: `1px solid ${T.border}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <div style={{ color: T.textDim, fontSize: 9, fontWeight: 700, letterSpacing: 1, fontFamily: T.font }}>
+                  GENERATED TEMPLATE
+                </div>
+                <button onClick={async () => {
+                  const tmpl = generateTemplate(mergedForm);
+                  try {
+                    await navigator.clipboard.writeText(tmpl);
+                    setTemplateCopied(true);
+                    setTimeout(() => setTemplateCopied(false), 3000);
+                  } catch {}
+                }} style={{
+                  ...btnStyle, background: templateCopied ? `${T.green}22` : `${T.accent}18`,
+                  border: `1px solid ${templateCopied ? T.green : T.accent}44`,
+                  color: templateCopied ? T.green : T.accent,
+                  fontSize: 9, padding: "3px 10px",
+                }}>
+                  {templateCopied ? "COPIED!" : "COPY TEMPLATE"}
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setStep("paste")} style={{
+                ...btnStyle, background: "none", border: `1px solid ${T.border}`,
+                color: T.textDim, padding: "8px 16px", fontSize: 11,
+              }}>Back</button>
+              <button onClick={handleApplyAndComplete} style={{
+                ...btnStyle, background: `${T.green}22`, border: `1px solid ${T.green}55`,
+                color: T.green, flex: 1, padding: "10px 16px", fontSize: 11, fontWeight: 700,
+              }}>
+                APPLY CHANGES & COMPLETE
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ──────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState(() => {
@@ -2403,6 +2700,7 @@ export default function App() {
   // ── Keyboard shortcuts ─────────────────────────────────────
   const [saveFlash, setSaveFlash] = useState("");
   const [masterSheetFlash, setMasterSheetFlash] = useState("");
+  const [completionModal, setCompletionModal] = useState(false);
   useEffect(() => {
     const handler = (e) => {
       // Ctrl+S / Cmd+S → Save
@@ -2725,6 +3023,39 @@ export default function App() {
       setMasterSheetFlash("Copy failed: " + e.message);
       setTimeout(() => setMasterSheetFlash(""), 5000);
     }
+  };
+
+  // Handle completion modal result — applies parsed template data (if any) and completes the claim
+  const handleCompletionApply = (parsedData, finalForm) => {
+    if (parsedData) {
+      // Merge parsed template fields into the form
+      setForm(prev => {
+        const merged = { ...prev, ...parsedData };
+        if (parsedData.mitigation) merged.mitigation = { ...prev.mitigation, ...parsedData.mitigation };
+        if (parsedData.audit) merged.audit = { ...prev.audit, ...parsedData.audit };
+        if (parsedData.contact) merged.contact = { ...prev.contact, ...parsedData.contact };
+        if (parsedData.resolution) merged.resolution = { ...prev.resolution, ...parsedData.resolution };
+        merged.status = "completed";
+        merged.updatedAt = new Date().toISOString();
+        // Save the merged form
+        const toSave = {
+          ...merged,
+          id: merged.id || crypto.randomUUID(),
+          generatedTemplate: generateTemplate(merged),
+          generatedEmail: generateShopEmail(merged),
+        };
+        saveTemplate(toSave);
+        return { ...merged, id: toSave.id };
+      });
+    } else {
+      // No template changes — just complete as-is
+      set("status", "completed");
+      handleSave("completed");
+    }
+    setCompletionModal(false);
+    setMasterSheetFlash("Row copied! Paste into master sheet to update status.");
+    setTimeout(() => setMasterSheetFlash(""), 5000);
+    setTab("home");
   };
 
   // Load from history — loads into the current claim tab
@@ -3310,6 +3641,12 @@ export default function App() {
               <div style={{ display: "flex", gap: 4, padding: "4px", background: T.inputBg, borderRadius: 6, border: `1px solid ${T.border}` }}>
                 {CLAIM_STATUSES.map(s => (
                   <button key={s.key} onClick={async () => {
+                    // For "completed" status, show the custom template modal first
+                    if (s.key === "completed") {
+                      if (!handleSaveWithValidation(s.key)) return;
+                      setCompletionModal(true);
+                      return;
+                    }
                     if (handleSaveWithValidation(s.key)) {
                       set("status", s.key);
                       // Auto-copy master sheet row on any status change
@@ -3350,6 +3687,14 @@ export default function App() {
         {/* ─── SETTINGS TAB ─── */}
         {tab === "settings" && <SettingsPanel />}
       </div>
+
+      {/* ─── Completion Template Modal ─── */}
+      <CustomTemplateModal
+        open={completionModal}
+        onClose={() => setCompletionModal(false)}
+        onApply={handleCompletionApply}
+        currentForm={form}
+      />
     </div>
   );
 }
