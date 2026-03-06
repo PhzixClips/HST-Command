@@ -6,6 +6,7 @@ import { parseClaimData, GEMINI_MODELS, getSettings, saveSettings } from "./util
 import { CHARGE_TYPES, isChargeDenied, getDefaultAmount } from "./data/chargeTypes.js";
 import { LEGAL_CITATIONS } from "./data/legalCitations.js";
 import { calcMitigationCutoff, getDefaultMarketRate, lookupShopRate, isLateNotification, getDeniedFeesSummary } from "./utils/rules.js";
+import { generateAlerts } from "./utils/alerts.js";
 import { daysBetween, formatMMDD, formatMMDDYYYY, toInputDate, fromInputDate, addBusinessDays } from "./utils/dates.js";
 import { calcTotalBilled, calcApprovedStorage, calcTotalApproved, calcDisputed, fmt, fmtDollar } from "./utils/calculations.js";
 import { getTemplates, saveTemplate, deleteTemplate, getRates, saveRates, addRates, deleteRate, addShopContact, getShopContactsByName, deleteShopContact, getShopReputation } from "./utils/storage.js";
@@ -222,6 +223,19 @@ function PastePanel({ onParsed, storedRaw = "" }) {
   const [error, setError] = useState("");
   const [collapsed, setCollapsed] = useState(false);
   const [peekOpen, setPeekOpen] = useState(false);
+
+  // Reset local state when the parent form is cleared (new claim)
+  const prevStoredRaw = useRef(storedRaw);
+  useEffect(() => {
+    if (prevStoredRaw.current && !storedRaw) {
+      // storedRaw went from something → empty = new/cleared claim
+      setRaw("");
+      setError("");
+      setCollapsed(false);
+      setPeekOpen(false);
+    }
+    prevStoredRaw.current = storedRaw;
+  }, [storedRaw]);
 
   const handleSmartFill = async () => {
     if (!raw.trim()) return;
@@ -2510,6 +2524,7 @@ export default function App() {
   const handleNew = () => {
     setForm(createEmpty());
     setAiFields([]);
+    setDupWarning(null);
   };
 
   // Generate narrative
@@ -2580,6 +2595,7 @@ export default function App() {
 
   const aiBadge = (field) => aiFields.includes(field) ? "AI" : null;
   const lateNotif = isLateNotification(form.storageStartDate, form.claimReportDate);
+  const smartAlerts = generateAlerts(form);
 
   return (
     <div style={{ background: T.bg, minHeight: "100vh", color: T.text, fontFamily: T.font }}>
@@ -2690,12 +2706,20 @@ export default function App() {
               </div>
             )}
 
-            {lateNotif && (
-              <div style={{ background: `${T.orange}15`, border: `1px solid ${T.orange}44`, borderRadius: 6, padding: "10px 14px", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ color: T.orange, fontSize: 14 }}>!</span>
-                <span style={{ color: T.orange, fontSize: 11, fontFamily: T.font }}>
-                  LATE NOTIFICATION: Vehicle arrived {daysBetween(form.storageStartDate, form.claimReportDate)} days before claim was filed. Storage may start at Date of Notice.
-                </span>
+            {smartAlerts.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+                {smartAlerts.map(a => {
+                  const color = a.level === "error" ? T.red : a.level === "warn" ? T.orange : T.blue;
+                  const icon = a.level === "error" ? "!!" : a.level === "warn" ? "!" : "i";
+                  return (
+                    <div key={a.key} style={{ background: `${color}15`, border: `1px solid ${color}44`, borderRadius: 6, padding: "10px 14px", display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ color, fontSize: 12, fontWeight: 700, minWidth: 16, textAlign: "center" }}>{icon}</span>
+                      <span style={{ color, fontSize: 11, fontFamily: T.font }}>
+                        <strong>{a.title}:</strong> {a.message}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
