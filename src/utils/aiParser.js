@@ -89,7 +89,31 @@ CRITICAL EXTRACTION RULES:
 - Calculate charge amounts: storage amount = rate * days
 - For total billed, include the actual total from the shop invoice
 - If a field cannot be determined from the data, use empty string "" or 0
-- Return ONLY the JSON object, nothing else`;
+- Return ONLY the JSON object, nothing else
+
+**CHARGES - CRITICAL**: You MUST extract EVERY single line-item charge. Missing even one charge is unacceptable.
+  Common charge types found in IAA/CSAToday release notes and shop invoices:
+  * Storage (has rate, days, start/end dates)
+  * Advance Tow / Towing
+  * Tear Down / Teardown
+  * Administrative Fee / Admin Fee
+  * Extra Equipment
+  * Estimate / Estimate Fee
+  * Gate Fee
+  * Impound Fee
+  * Clean Up
+  * Dolly
+  * Pre-Scan
+  * Lien
+  * Labor
+  Look for charge breakdowns in ALL of these locations in the data:
+  * IAA/CSAToday release notes with "Total Advance Charges Need Approval" sections
+  * Lines formatted as "ChargeName: $ amount" or "ChargeName: $amount"
+  * Appraiser advance fee notes with "Amount Requested" or "Amount Negotiated" sections
+  * Any tabular or listed fee breakdowns
+  * The MOST RECENT charge breakdown has the most up-to-date amounts
+  Use the exact charge type names listed above (e.g. "Administrative Fee" not "Admin", "Advance Tow" not "Towing").
+  For chargesBilledThrough, use the date from the most recent charge breakdown (e.g. "Estimated Pickup Date" or "Billed through" date).`;
 
 /**
  * Deterministic fallback: extract IAA stock number from raw text using regex.
@@ -182,6 +206,128 @@ function extractVIN(rawText) {
 }
 
 /**
+ * Deterministic fallback: extract ALL itemized charges from IAA/CSAToday and shop data.
+ * Catches patterns like "Storage: $ 5,250.00", "Advance Tow: $ 940.00", etc.
+ * Returns array of { name, amount } objects found in the text.
+ */
+function extractChargesFromText(rawText) {
+  const found = [];
+
+  // Canonical charge names to look for — order matters (longer names first to avoid partial matches)
+  const chargeLabels = [
+    { pattern: /(?:advance\s*tow|towing|tow\s*(?:fee|bill|charge))\b/i, name: "Advance Tow" },
+    { pattern: /\btear\s*down\b/i, name: "Teardown" },
+    { pattern: /\b(?:admin(?:istrative)?\s*fee)\b/i, name: "Administrative Fee" },
+    { pattern: /\b(?:extra\s*equipment)\b/i, name: "Extra Equipment" },
+    { pattern: /\b(?:estimate\s*(?:fee)?)\b(?!\s*(?:amount|repair|supplement))/i, name: "Estimate Fee" },
+    { pattern: /\b(?:gate\s*fee)\b/i, name: "Gate Fee" },
+    { pattern: /\b(?:impound\s*fee)\b/i, name: "Impound Fee" },
+    { pattern: /\b(?:clean\s*up)\b/i, name: "Clean Up" },
+    { pattern: /\b(?:dolly)\b/i, name: "Dolly" },
+    { pattern: /\b(?:pre[- ]?scan)\b/i, name: "Pre-Scan" },
+    { pattern: /\b(?:lien\s*(?:fee)?)\b/i, name: "Lien" },
+    { pattern: /\b(?:environmental\s*fee)\b/i, name: "Environmental Fee" },
+    { pattern: /\b(?:release\s*fee)\b/i, name: "Release Fee" },
+    { pattern: /\b(?:hook\s*up)\b/i, name: "Hook Up" },
+    { pattern: /\b(?:yard\s*fee)\b/i, name: "Yard Fee" },
+    { pattern: /\b(?:battery\s*maintenance)\b/i, name: "Battery Maintenance" },
+    { pattern: /\b(?:cover\s*car)\b/i, name: "Cover Car" },
+  ];
+
+  // Match "Label: $ amount" or "Label: $amount" patterns (IAA/CSAToday format)
+  // Also match "Label $amount" and "Label = $amount"
+  for (const { pattern, name } of chargeLabels) {
+    // Build a regex that captures the amount after the label
+    const fullPattern = new RegExp(
+      pattern.source + "\\s*[:=]?\\s*\\$\\s*([\\d,]+\\.?\\d*)",
+      "gi"
+    );
+    let match;
+    const amounts = [];
+    while ((match = fullPattern.exec(rawText)) !== null) {
+      const amt = parseFloat(match[1].replace(/,/g, ""));
+      if (amt > 0) amounts.push(amt);
+    }
+    // Use the LAST occurrence (most recent/up-to-date charges)
+    if (amounts.length > 0) {
+      found.push({ name, amount: amounts[amounts.length - 1] });
+    }
+  }
+
+  // Storage: special handling — extract rate, days, and date range
+  const storageRatePattern = /storage\s*rate\s*[:=]?\s*\$\s*([\d,]+\.?\d*)/gi;
+  const storageAmtPattern = /(?:^|\n|,)\s*storage\s*[:=]\s*\$\s*([\d,]+\.?\d*)/gi;
+  const storageDaysPattern = /storage\s*(?:start|days)?\s*[:=]?\s*(\d{2}\/\d{2}\/\d{4})/gi;
+
+  let storageRate = 0, storageTotal = 0;
+  let rateMatches = [], totalMatches = [];
+
+  let m;
+  while ((m = storageRatePattern.exec(rawText)) !== null) {
+    rateMatches.push(parseFloat(m[1].replace(/,/g, "")));
+  }
+  while ((m = storageAmtPattern.exec(rawText)) !== null) {
+    totalMatches.push(parseFloat(m[1].replace(/,/g, "")));
+  }
+
+  if (rateMatches.length > 0) storageRate = rateMatches[rateMatches.length - 1];
+  if (totalMatches.length > 0) storageTotal = totalMatches[totalMatches.length - 1];
+
+  // Extract storage start date
+  const startPattern = /storage\s*start\s*[:=]?\s*(\d{2}\/\d{2}\/\d{4})/i;
+  const startMatch = startPattern.exec(rawText);
+  const storageStart = startMatch ? startMatch[1] : "";
+
+  // Extract estimated pickup / billed-through date
+  const pickupPattern = /(?:estimated\s*pickup\s*date|billed\s*through)\s*[:=]?\s*(\d{2}\/\d{2}\/\d{4})/i;
+  const pickupMatch = pickupPattern.exec(rawText);
+  const billedThrough = pickupMatch ? pickupMatch[1] : "";
+
+  if (storageTotal > 0 || storageRate > 0) {
+    const days = storageRate > 0 && storageTotal > 0 ? Math.round(storageTotal / storageRate) : 0;
+    const startMmdd = storageStart ? storageStart.substring(0, 5) : "";
+    const endMmdd = billedThrough ? billedThrough.substring(0, 5) : "";
+    found.unshift({
+      name: "Storage",
+      amount: storageTotal,
+      rate: storageRate,
+      days,
+      startDate: startMmdd,
+      endDate: endMmdd,
+    });
+  }
+
+  return { charges: found, billedThrough: billedThrough ? billedThrough.substring(0, 5) : "" };
+}
+
+/**
+ * Merge regex-extracted charges into AI-parsed charges.
+ * Only adds charges that the AI missed (by name match).
+ * If AI got an amount wrong vs regex, keep the AI amount (user can review).
+ */
+function mergeCharges(aiCharges, regexResult) {
+  const merged = [...(aiCharges || [])];
+  const existingNames = new Set(merged.map(c => c.name.toLowerCase().trim()));
+
+  for (const rc of regexResult.charges) {
+    const rcLower = rc.name.toLowerCase().trim();
+    // Check if AI already captured this charge (fuzzy match)
+    const alreadyExists = existingNames.has(rcLower) ||
+      [...existingNames].some(existing => {
+        const normExisting = existing.replace(/\s+/g, "");
+        const normNew = rcLower.replace(/\s+/g, "");
+        return normExisting.includes(normNew) || normNew.includes(normExisting);
+      });
+
+    if (!alreadyExists) {
+      merged.push(rc);
+    }
+  }
+
+  return merged;
+}
+
+/**
  * Post-process AI result: fill in any blanks the AI missed using regex fallbacks
  */
 function postProcess(parsed, rawText) {
@@ -196,6 +342,13 @@ function postProcess(parsed, rawText) {
   // Fallback for IAA stock - ALWAYS run this if AI left it blank
   if (!parsed.iaaStock) {
     parsed.iaaStock = extractIAAStock(rawText, parsed.claimNumber, parsed.vin);
+  }
+  // ALWAYS run charge extraction and merge — we can't afford to miss any charges
+  const regexResult = extractChargesFromText(rawText);
+  parsed.charges = mergeCharges(parsed.charges, regexResult);
+  // Fill in billed-through date if AI missed it
+  if (!parsed.chargesBilledThrough && regexResult.billedThrough) {
+    parsed.chargesBilledThrough = regexResult.billedThrough;
   }
   return parsed;
 }
