@@ -9,7 +9,7 @@ import { calcMitigationCutoff, getDefaultMarketRate, lookupShopRate, isLateNotif
 import { generateAlerts } from "./utils/alerts.js";
 import { daysBetween, formatMMDD, formatMMDDYYYY, toInputDate, fromInputDate, addBusinessDays } from "./utils/dates.js";
 import { calcTotalBilled, calcApprovedStorage, calcTotalApproved, calcDisputed, fmt, fmtDollar } from "./utils/calculations.js";
-import { getTemplates, saveTemplate, deleteTemplate, getRates, saveRates, addRates, deleteRate, addShopContact, getShopContactsByName, deleteShopContact, getShopReputation } from "./utils/storage.js";
+import { getTemplates, saveTemplate, deleteTemplate, getRates, saveRates, addRates, deleteRate, addShopContact, getShopContactsByName, deleteShopContact, getShopReputation, exportAllData, importAllData } from "./utils/storage.js";
 import { DEFAULT_SHOPS } from "./data/defaultShops.js";
 
 // ─── Date helpers for calendar inputs (MM/DD <-> YYYY-MM-DD) ──
@@ -1193,8 +1193,11 @@ function HomeDashboard({ onNewClaim, onLoadClaim, onUpdateStatus }) {
   };
 
   const safeSetTemplates = (updated) => {
-    // Save to localStorage directly
-    try { localStorage.setItem("hst-templates", JSON.stringify(updated)); } catch {}
+    try {
+      localStorage.setItem("hst-templates", JSON.stringify(updated));
+    } catch (e) {
+      alert("Save failed — localStorage may be full. Export your data as a backup.");
+    }
     setTemplates(updated);
   };
 
@@ -1260,11 +1263,18 @@ function HomeDashboard({ onNewClaim, onLoadClaim, onUpdateStatus }) {
     );
   };
 
-  const ColumnHeader = ({ label, count, color }) => (
+  const ColumnHeader = ({ label, count, color, overdueCount = 0 }) => (
     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
       <div style={{ width: 8, height: 8, borderRadius: "50%", background: color }} />
       <span style={{ color: T.text, fontSize: 11, fontWeight: 600, fontFamily: T.font, letterSpacing: 1 }}>{label}</span>
       <span style={{ color: T.textDim, fontSize: 10, fontFamily: T.font }}>({count})</span>
+      {overdueCount > 0 && (
+        <span style={{
+          background: T.danger, color: "#fff", fontSize: 8, fontWeight: 700,
+          padding: "1px 6px", borderRadius: 8, fontFamily: T.font, letterSpacing: 0.5,
+          animation: "pulse 1.5s infinite",
+        }}>{overdueCount} OVERDUE</span>
+      )}
     </div>
   );
 
@@ -1290,7 +1300,7 @@ function HomeDashboard({ onNewClaim, onLoadClaim, onUpdateStatus }) {
             fontSize: 12, fontWeight: 600, letterSpacing: 1,
           }}>+ NEW CLAIM</button>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+        <div className="hst-savings-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
           <div style={{ background: T.bg, borderRadius: 6, padding: "14px 16px", textAlign: "center" }}>
             <div style={{ color: "#4ade80", fontSize: 22, fontWeight: 700, fontFamily: T.font }}>{fmtDollar(weekSavings)}</div>
             <div style={{ color: T.textDim, fontSize: 9, letterSpacing: 1.5, fontFamily: T.font, marginTop: 4 }}>THIS WEEK</div>
@@ -1316,10 +1326,10 @@ function HomeDashboard({ onNewClaim, onLoadClaim, onUpdateStatus }) {
       </div>
 
       {/* Status columns */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
+      <div className="hst-status-cols" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
         {/* Pending */}
         <div>
-          <ColumnHeader label="PENDING" count={pending.length} color="#d4a040" />
+          <ColumnHeader label="PENDING" count={pending.length} color="#d4a040" overdueCount={pending.filter(c => c.followUpAt && new Date(c.followUpAt).getTime() <= Date.now()).length} />
           <div style={{ display: "grid", gap: 6 }}>
             {pending.length === 0 && <div style={{ color: T.textMuted, fontSize: 10, fontFamily: T.font, padding: 12, textAlign: "center" }}>No pending claims</div>}
             {pending.map(c => <ClaimCard key={c.id} claim={c} />)}
@@ -1327,7 +1337,7 @@ function HomeDashboard({ onNewClaim, onLoadClaim, onUpdateStatus }) {
         </div>
         {/* Negotiating */}
         <div>
-          <ColumnHeader label="NEGOTIATING" count={negotiating.length} color="#6b8afd" />
+          <ColumnHeader label="NEGOTIATING" count={negotiating.length} color="#6b8afd" overdueCount={negotiating.filter(c => c.followUpAt && new Date(c.followUpAt).getTime() <= Date.now()).length} />
           <div style={{ display: "grid", gap: 6 }}>
             {negotiating.length === 0 && <div style={{ color: T.textMuted, fontSize: 10, fontFamily: T.font, padding: 12, textAlign: "center" }}>No active negotiations</div>}
             {negotiating.map(c => <ClaimCard key={c.id} claim={c} />)}
@@ -1335,7 +1345,7 @@ function HomeDashboard({ onNewClaim, onLoadClaim, onUpdateStatus }) {
         </div>
         {/* Escalated */}
         <div>
-          <ColumnHeader label="ESCALATED" count={escalated.length} color="#e05555" />
+          <ColumnHeader label="ESCALATED" count={escalated.length} color="#e05555" overdueCount={escalated.filter(c => c.followUpAt && new Date(c.followUpAt).getTime() <= Date.now()).length} />
           <div style={{ display: "grid", gap: 6 }}>
             {escalated.length === 0 && <div style={{ color: T.textMuted, fontSize: 10, fontFamily: T.font, padding: 12, textAlign: "center" }}>No escalated claims</div>}
             {escalated.map(c => <ClaimCard key={c.id} claim={c} />)}
@@ -1343,7 +1353,99 @@ function HomeDashboard({ onNewClaim, onLoadClaim, onUpdateStatus }) {
         </div>
       </div>
 
-      {/* Recently Completed */}
+      {/* Savings Trend Chart (item 19) */}
+      {allWithSavings.length > 0 && (() => {
+        // Build monthly data for last 6 months
+        const months = [];
+        for (let i = 5; i >= 0; i--) {
+          const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          const label = d.toLocaleDateString("en-US", { month: "short" });
+          const claims = allWithSavings.filter(t => {
+            const dt = new Date(t.updatedAt || t.createdAt);
+            return dt.getMonth() === d.getMonth() && dt.getFullYear() === d.getFullYear();
+          });
+          const savings = claims.reduce((sum, t) => {
+            const billed = calcTotalBilled(t.charges);
+            return sum + Math.max(0, billed - (t.resolution?.approvedCharges || 0));
+          }, 0);
+          months.push({ label, savings, count: claims.length });
+        }
+        const maxSavings = Math.max(...months.map(m => m.savings), 1);
+        return (
+          <div style={{ background: T.cardBg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "16px 20px", marginBottom: 20 }}>
+            <div style={{ color: T.textDim, fontSize: 9, letterSpacing: 2, fontFamily: T.font, marginBottom: 12 }}>SAVINGS TREND (6 MONTHS)</div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 100 }}>
+              {months.map((m, i) => (
+                <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                  <span style={{ color: "#4ade80", fontSize: 9, fontFamily: T.font, fontWeight: 600 }}>
+                    {m.savings > 0 ? `$${Math.round(m.savings / 1000)}k` : ""}
+                  </span>
+                  <div style={{
+                    width: "100%", maxWidth: 40, borderRadius: 3,
+                    background: m.savings > 0 ? `linear-gradient(to top, #4ade8044, #4ade8088)` : `${T.textMuted}22`,
+                    height: Math.max(4, (m.savings / maxSavings) * 80),
+                    transition: "height 0.3s",
+                  }} />
+                  <span style={{ color: T.textDim, fontSize: 8, fontFamily: T.font }}>{m.label}</span>
+                  {m.count > 0 && <span style={{ color: T.textMuted, fontSize: 7, fontFamily: T.font }}>{m.count} claims</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Shop Comparison / Resolution Time (item 18) */}
+      {completed.length > 0 && (() => {
+        // Group completed claims by shop
+        const shopMap = {};
+        for (const c of completed) {
+          const name = c.shopName || "Unknown";
+          if (!shopMap[name]) shopMap[name] = { claims: [], totalSaved: 0, totalBilled: 0, totalDays: 0 };
+          const billed = calcTotalBilled(c.charges);
+          const approved = c.resolution?.approvedCharges || 0;
+          shopMap[name].claims.push(c);
+          shopMap[name].totalBilled += billed;
+          shopMap[name].totalSaved += Math.max(0, billed - approved);
+          // Resolution time: created → completed (updatedAt)
+          if (c.createdAt && c.updatedAt) {
+            const days = Math.max(0, Math.round((new Date(c.updatedAt) - new Date(c.createdAt)) / 86400000));
+            shopMap[name].totalDays += days;
+          }
+        }
+        const shops = Object.entries(shopMap)
+          .map(([name, d]) => ({ name, ...d, avgDays: Math.round(d.totalDays / d.claims.length), count: d.claims.length }))
+          .sort((a, b) => b.totalSaved - a.totalSaved)
+          .slice(0, 8);
+        if (shops.length === 0) return null;
+        return (
+          <div style={{ background: T.cardBg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "16px 20px", marginBottom: 20 }}>
+            <div style={{ color: T.textDim, fontSize: 9, letterSpacing: 2, fontFamily: T.font, marginBottom: 10 }}>TOP SHOPS BY SAVINGS</div>
+            <div style={{ display: "grid", gap: 2 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1.5fr 60px 80px 80px 80px 60px", gap: 6, padding: "4px 8px", borderBottom: `1px solid ${T.border}` }}>
+                {["Shop", "Claims", "Billed", "Saved", "Avg Days", "Reduction"].map(h => (
+                  <span key={h} style={{ color: T.textDim, fontSize: 8, letterSpacing: 1, fontFamily: T.font }}>{h}</span>
+                ))}
+              </div>
+              {shops.map(s => {
+                const pct = s.totalBilled > 0 ? Math.round((s.totalSaved / s.totalBilled) * 100) : 0;
+                return (
+                  <div key={s.name} style={{ display: "grid", gridTemplateColumns: "1.5fr 60px 80px 80px 80px 60px", gap: 6, padding: "6px 8px", borderRadius: 3 }}>
+                    <span style={{ color: T.text, fontSize: 10, fontFamily: T.font, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+                    <span style={{ color: T.textDim, fontSize: 10, fontFamily: T.font }}>{s.count}</span>
+                    <span style={{ color: T.textDim, fontSize: 10, fontFamily: T.font }}>{fmtDollar(s.totalBilled)}</span>
+                    <span style={{ color: "#4ade80", fontSize: 10, fontFamily: T.font, fontWeight: 600 }}>{fmtDollar(s.totalSaved)}</span>
+                    <span style={{ color: T.accent, fontSize: 10, fontFamily: T.font }}>{s.avgDays}d</span>
+                    <span style={{ color: pct > 50 ? T.danger : pct > 25 ? T.amber : "#4ade80", fontSize: 10, fontFamily: T.font, fontWeight: 600 }}>{pct}%</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Recently Completed (item 20 — enriched table) */}
       <div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
           <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#4ade80" }} />
@@ -1354,21 +1456,34 @@ function HomeDashboard({ onNewClaim, onLoadClaim, onUpdateStatus }) {
           <div style={{ color: T.textMuted, fontSize: 10, fontFamily: T.font, padding: 16, textAlign: "center" }}>No completed claims yet. Get to work!</div>
         ) : (
           <div style={{ display: "grid", gap: 4 }}>
-            {completed.slice(0, 10).map(c => {
+            {/* Header row */}
+            <div style={{
+              display: "grid", gridTemplateColumns: "1fr 1fr 0.6fr 80px 80px 80px 50px 60px", gap: 8,
+              padding: "6px 12px", borderBottom: `1px solid ${T.border}`,
+            }}>
+              {["Claim #", "Shop", "Vehicle", "Billed", "Paid", "Saved", "Days", "Date"].map(h => (
+                <span key={h} style={{ color: T.textDim, fontSize: 8, letterSpacing: 1, fontFamily: T.font }}>{h}</span>
+              ))}
+            </div>
+            {completed.slice(0, 15).map(c => {
               const billed = calcTotalBilled(c.charges);
               const approved = c.resolution?.approvedCharges || 0;
               const saved = Math.max(0, billed - approved);
+              const resDays = (c.createdAt && c.updatedAt) ? Math.max(0, Math.round((new Date(c.updatedAt) - new Date(c.createdAt)) / 86400000)) : "-";
+              const vehicle = [c.vehicleYear, c.vehicleMake].filter(Boolean).join(" ");
               return (
                 <div key={c.id} onClick={() => onLoadClaim(c)} style={{
-                  display: "grid", gridTemplateColumns: "1fr 1fr 80px 80px 80px 60px", gap: 8, alignItems: "center",
+                  display: "grid", gridTemplateColumns: "1fr 1fr 0.6fr 80px 80px 80px 50px 60px", gap: 8, alignItems: "center",
                   padding: "8px 12px", background: T.cardBg, border: `1px solid ${T.border}`, borderRadius: 4, cursor: "pointer",
                   borderLeft: `3px solid #4ade80`,
                 }}>
                   <span style={{ color: T.text, fontSize: 11, fontFamily: T.font, fontWeight: 500 }}>{c.claimNumber || "-"}</span>
-                  <span style={{ color: T.textDim, fontSize: 10, fontFamily: T.font }}>{c.shopName || "-"}</span>
-                  <span style={{ color: T.textDim, fontSize: 10, fontFamily: T.font }}>Billed: {fmtDollar(billed)}</span>
-                  <span style={{ color: T.accent, fontSize: 10, fontFamily: T.font }}>Paid: {fmtDollar(approved)}</span>
-                  <span style={{ color: "#4ade80", fontSize: 10, fontFamily: T.font, fontWeight: 600 }}>Saved: {fmtDollar(saved)}</span>
+                  <span style={{ color: T.textDim, fontSize: 10, fontFamily: T.font, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.shopName || "-"}</span>
+                  <span style={{ color: T.textMuted, fontSize: 9, fontFamily: T.font, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{vehicle || "-"}</span>
+                  <span style={{ color: T.textDim, fontSize: 10, fontFamily: T.font }}>{fmtDollar(billed)}</span>
+                  <span style={{ color: T.accent, fontSize: 10, fontFamily: T.font }}>{fmtDollar(approved)}</span>
+                  <span style={{ color: "#4ade80", fontSize: 10, fontFamily: T.font, fontWeight: 600 }}>{fmtDollar(saved)}</span>
+                  <span style={{ color: T.accent, fontSize: 10, fontFamily: T.font }}>{resDays}{typeof resDays === "number" ? "d" : ""}</span>
                   <span style={{ color: T.textMuted, fontSize: 9, fontFamily: T.font, textAlign: "right" }}>
                     {c.updatedAt ? new Date(c.updatedAt).toLocaleDateString() : ""}
                   </span>
@@ -1775,6 +1890,30 @@ function SettingsPanel() {
           <Btn onClick={handleSave} color={saved ? T.green : T.blue}>
             {saved ? "SAVED!" : "SAVE"}
           </Btn>
+        </div>
+      </Section>
+
+      <Section title="DATA BACKUP" accent={T.amber}>
+        <div style={{ color: T.textDim, fontSize: 11, fontFamily: T.font, marginBottom: 10, lineHeight: 1.6 }}>
+          Export all claims, shop rates, contacts, and settings as a JSON file. Import to restore.
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <Btn onClick={exportAllData} color={T.amber}>EXPORT BACKUP</Btn>
+          <label style={{ ...btnStyle(T.accent), display: "inline-block", cursor: "pointer" }}>
+            IMPORT BACKUP
+            <input type="file" accept=".json" onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              try {
+                const result = await importAllData(file);
+                alert(`Restored ${result.claimCount} claims from backup (exported ${result.exportedAt ? new Date(result.exportedAt).toLocaleDateString() : "unknown date"}). Reload to see changes.`);
+                window.location.reload();
+              } catch (err) {
+                alert(err.message);
+              }
+              e.target.value = "";
+            }} style={{ display: "none" }} />
+          </label>
         </div>
       </Section>
 
@@ -2216,13 +2355,18 @@ export default function App() {
 
   // Multi-claim: add new claim tab
   const addClaimTab = () => {
-    setClaims(prev => [...prev, { form: createEmpty(), aiFields: [] }]);
-    setActiveClaimIdx(claims.length);
+    setClaims(prev => {
+      setActiveClaimIdx(prev.length); // use prev.length to avoid stale closure
+      return [...prev, { form: createEmpty(), aiFields: [] }];
+    });
   };
 
   // Multi-claim: close claim tab
   const closeClaimTab = (idx) => {
     if (claims.length <= 1) return; // keep at least one
+    const closing = claims[idx];
+    const hasData = closing?.form.claimNumber || closing?.form.shopName || closing?.form.rawPastedData;
+    if (hasData && !window.confirm("Close this claim tab? Unsaved changes will be lost.")) return;
     setClaims(prev => prev.filter((_, i) => i !== idx));
     if (activeClaimIdx >= idx && activeClaimIdx > 0) {
       setActiveClaimIdx(activeClaimIdx - 1);
@@ -2236,6 +2380,40 @@ export default function App() {
   useEffect(() => {
     try { sessionStorage.setItem("hst-active-claim-idx", String(activeClaimIdx)); } catch {}
   }, [activeClaimIdx]);
+
+  // ── Warn before closing tab with unsaved work ──────────────
+  useEffect(() => {
+    const hasWork = claims.some(c => c.form.claimNumber || c.form.shopName || c.form.rawPastedData);
+    const handler = (e) => {
+      if (hasWork) { e.preventDefault(); e.returnValue = ""; }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [claims]);
+
+  // ── Keyboard shortcuts ─────────────────────────────────────
+  const [saveFlash, setSaveFlash] = useState("");
+  useEffect(() => {
+    const handler = (e) => {
+      // Ctrl+S / Cmd+S → Save
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        if (tab === "new") handleSaveWithValidation();
+      }
+      // Ctrl+N / Cmd+N → New claim tab
+      if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+        e.preventDefault();
+        addClaimTab();
+        setTab("new");
+      }
+      // Escape → close open dropdowns / go home
+      if (e.key === "Escape") {
+        if (tab === "new") setTab("home");
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [tab]);
 
   // Auto-save drafts to sessionStorage every 5 seconds
   useEffect(() => {
@@ -2488,6 +2666,16 @@ export default function App() {
     setForm(prev => ({ ...prev, id: toSave.id, status: toSave.status }));
   };
 
+  // Save with validation
+  const handleSaveWithValidation = (overrideStatus) => {
+    if (!form.claimNumber?.trim() && !form.shopName?.trim()) {
+      setSaveFlash("Enter at least a Claim # or Shop Name before saving.");
+      setTimeout(() => setSaveFlash(""), 4000);
+      return false;
+    }
+    return handleSave(overrideStatus);
+  };
+
   // Save
   const handleSave = (overrideStatus) => {
     const toSave = {
@@ -2497,8 +2685,17 @@ export default function App() {
       generatedTemplate: generateTemplate(form),
       generatedEmail: generateShopEmail(form),
     };
-    saveTemplate(toSave);
-    setForm(prev => ({ ...prev, id: toSave.id, status: toSave.status }));
+    try {
+      saveTemplate(toSave);
+      setForm(prev => ({ ...prev, id: toSave.id, status: toSave.status }));
+      setSaveFlash("Saved!");
+      setTimeout(() => setSaveFlash(""), 2000);
+      return true;
+    } catch (e) {
+      setSaveFlash(e.message);
+      setTimeout(() => setSaveFlash(""), 5000);
+      return false;
+    }
   };
 
   // Load from history — loads into the current claim tab
@@ -2510,6 +2707,8 @@ export default function App() {
 
   // Reset current claim tab
   const handleNew = () => {
+    const hasData = form.claimNumber || form.shopName || form.rawPastedData;
+    if (hasData && !window.confirm("Clear this claim? Unsaved changes will be lost.")) return;
     setForm(createEmpty());
     setAiFields([]);
     setDupWarning(null);
@@ -2591,15 +2790,30 @@ export default function App() {
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
         @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
         @keyframes pulseGlow { 0%,100% { box-shadow: 0 0 0 0 rgba(224,85,85,0); } 50% { box-shadow: 0 0 8px 2px rgba(224,85,85,0.3); } }
+        @media (max-width: 900px) {
+          .hst-form-grid { grid-template-columns: 1fr !important; }
+          .hst-status-cols { grid-template-columns: 1fr !important; }
+          .hst-savings-grid { grid-template-columns: repeat(2, 1fr) !important; }
+          .hst-completed-row { grid-template-columns: 1fr 1fr 80px 80px !important; }
+          .hst-completed-header { grid-template-columns: 1fr 1fr 80px 80px !important; }
+          .hst-nav-tabs { flex-wrap: wrap; gap: 4px !important; }
+          .hst-header { flex-direction: column; gap: 8px; align-items: flex-start !important; }
+          .hst-shop-table { grid-template-columns: 1fr 80px 60px !important; }
+        }
+        @media (max-width: 600px) {
+          .hst-savings-grid { grid-template-columns: 1fr 1fr !important; }
+          .hst-completed-row { grid-template-columns: 1fr 80px 80px !important; }
+          .hst-completed-header { grid-template-columns: 1fr 80px 80px !important; }
+        }
       `}</style>
       <FollowUpToasts onGoToClaim={(claim) => { handleLoad(claim); }} />
       {/* Header */}
-      <div style={{ borderBottom: `1px solid ${T.border}`, padding: "14px 20px", background: T.cardBg, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div className="hst-header" style={{ borderBottom: `1px solid ${T.border}`, padding: "14px 20px", background: T.cardBg, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
           <div style={{ color: T.text, fontSize: 16, fontWeight: 700, letterSpacing: 2 }}>HST Command</div>
           <div style={{ color: T.textMuted, fontSize: 9, letterSpacing: 1.5, marginTop: 2 }}>High Storage Template Generator</div>
         </div>
-        <div style={{ display: "flex", gap: 2 }}>
+        <div className="hst-nav-tabs" style={{ display: "flex", gap: 2 }}>
           {TABS.map(t => (
             <button
               key={t.key}
@@ -2711,7 +2925,7 @@ export default function App() {
               </div>
             )}
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
+            <div className="hst-form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
               {/* LEFT: Form */}
               <div>
                 {/* Claim Info */}
@@ -2986,10 +3200,16 @@ export default function App() {
 
             {/* Action Bar */}
             <div style={{ display: "flex", gap: 10, marginTop: 16, padding: "14px 0", borderTop: `1px solid ${T.border}`, flexWrap: "wrap", alignItems: "center" }}>
-              <Btn onClick={() => handleSave()} color={T.green}>SAVE</Btn>
+              <Btn onClick={() => handleSaveWithValidation()} color={T.green}>SAVE</Btn>
+              {saveFlash && (
+                <span style={{
+                  color: saveFlash === "Saved!" ? T.success : T.danger,
+                  fontSize: 11, fontFamily: T.font, fontWeight: 600, letterSpacing: 0.5,
+                }}>{saveFlash}</span>
+              )}
               <div style={{ display: "flex", gap: 4, padding: "4px", background: T.inputBg, borderRadius: 6, border: `1px solid ${T.border}` }}>
                 {CLAIM_STATUSES.map(s => (
-                  <button key={s.key} onClick={() => { set("status", s.key); handleSave(s.key); setTab("home"); }} style={{
+                  <button key={s.key} onClick={() => { if (handleSaveWithValidation(s.key)) { set("status", s.key); setTab("home"); } }} style={{
                     background: form.status === s.key ? `${s.color}22` : "none",
                     border: form.status === s.key ? `1px solid ${s.color}55` : "1px solid transparent",
                     color: form.status === s.key ? s.color : T.textDim,

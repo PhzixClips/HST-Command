@@ -18,8 +18,10 @@ function safeGet(key, fallback) {
 function safeSet(key, value) {
   try {
     localStorage.setItem(key, JSON.stringify(value));
+    return true;
   } catch (e) {
     console.error("localStorage write failed:", e);
+    return false;
   }
 }
 
@@ -41,7 +43,8 @@ export function saveTemplate(template) {
       updatedAt: new Date().toISOString(),
     });
   }
-  safeSet(KEYS.TEMPLATES, templates);
+  const ok = safeSet(KEYS.TEMPLATES, templates);
+  if (!ok) throw new Error("Save failed — localStorage may be full. Export your data as a backup.");
   return templates;
 }
 
@@ -144,4 +147,48 @@ export function getShopReputation(shopName) {
     totalSaved,
     avgReduction: Math.round(avgReduction),
   };
+}
+
+// ── Data Export / Import ───────────────────────────────────────
+export function exportAllData() {
+  const data = {
+    _hstBackup: true,
+    _exportedAt: new Date().toISOString(),
+    templates: safeGet(KEYS.TEMPLATES, []),
+    rates: safeGet(KEYS.RATES, []),
+    settings: safeGet(KEYS.SETTINGS, {}),
+    contacts: safeGet("hst-shop-contacts", []),
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `hst-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export function importAllData(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (!data._hstBackup) {
+          reject(new Error("Not a valid HST backup file."));
+          return;
+        }
+        let count = 0;
+        if (data.templates) { safeSet(KEYS.TEMPLATES, data.templates); count += data.templates.length; }
+        if (data.rates) { safeSet(KEYS.RATES, data.rates); }
+        if (data.settings) { safeSet(KEYS.SETTINGS, data.settings); }
+        if (data.contacts) { safeSet("hst-shop-contacts", data.contacts); }
+        resolve({ claimCount: count, exportedAt: data._exportedAt });
+      } catch (e) {
+        reject(new Error("Invalid backup file: " + e.message));
+      }
+    };
+    reader.onerror = () => reject(new Error("Failed to read file."));
+    reader.readAsText(file);
+  });
 }
