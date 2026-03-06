@@ -1,5 +1,7 @@
 // Smart Alerts: contextual notifications to speed up claim processing
 import { daysBetween, parseDate, normalizeDateWithYear } from "./dates.js";
+import { getRates } from "./storage.js";
+import { lookupShopRate } from "./rules.js";
 
 // Alert levels: "warn" (orange), "info" (blue), "error" (red)
 // Each alert: { level, title, message, key }
@@ -148,20 +150,31 @@ function chargeAlerts(form, alerts) {
   if (storageCharge) {
     const rate = Number(storageCharge.rate);
     if (rate > 0) {
+      // Look up shop in rate database
+      const rateDb = getRates();
+      const shopRecord = form.shopName ? lookupShopRate(form.shopName, rateDb) : null;
+      const hasRateOnFile = shopRecord && shopRecord.marketRate > 0;
+
       if (rate > 350) {
-        alerts.push({
+        const rateNote = hasRateOnFile ? ` Rate on file: $${shopRecord.marketRate}/day.` : " No rate on file for this shop.";
+        const alert = {
           level: "error",
           title: "HIGH STORAGE RATE",
-          message: `Shop is billing $${rate}/day — well above typical CA market rates ($175-$275). Negotiate down.`,
+          message: `Shop is billing $${rate}/day — well above typical CA market rates ($175-$275).${rateNote} Negotiate down.`,
           key: "high-storage-rate",
-        });
+        };
+        if (!hasRateOnFile) alert.action = { label: "SEARCH AREA RATES", actionKey: "search-zip-rates" };
+        alerts.push(alert);
       } else if (rate > 275) {
-        alerts.push({
+        const rateNote = hasRateOnFile ? ` Rate on file: $${shopRecord.marketRate}/day.` : " No rate on file for this shop.";
+        const alert = {
           level: "warn",
           title: "ABOVE-MARKET RATE",
-          message: `Storage rate of $${rate}/day is above the typical range. Verify the area rate supports this.`,
+          message: `Storage rate of $${rate}/day is above the typical range.${rateNote} Verify the area rate supports this.`,
           key: "above-market-rate",
-        });
+        };
+        if (!hasRateOnFile) alert.action = { label: "SEARCH AREA RATES", actionKey: "search-zip-rates" };
+        alerts.push(alert);
       }
     }
 
