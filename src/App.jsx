@@ -72,6 +72,7 @@ const CLAIM_STATUSES = [
 // ─── Empty template factory ────────────────────────────────────
 function createEmpty() {
   return {
+    _key: crypto.randomUUID(),
     id: "",
     claimNumber: "",
     iaaStock: "",
@@ -223,19 +224,6 @@ function PastePanel({ onParsed, storedRaw = "" }) {
   const [error, setError] = useState("");
   const [collapsed, setCollapsed] = useState(false);
   const [peekOpen, setPeekOpen] = useState(false);
-
-  // Reset local state when the parent form is cleared (new claim)
-  const prevStoredRaw = useRef(storedRaw);
-  useEffect(() => {
-    if (prevStoredRaw.current && !storedRaw) {
-      // storedRaw went from something → empty = new/cleared claim
-      setRaw("");
-      setError("");
-      setCollapsed(false);
-      setPeekOpen(false);
-    }
-    prevStoredRaw.current = storedRaw;
-  }, [storedRaw]);
 
   const handleSmartFill = async () => {
     if (!raw.trim()) return;
@@ -2691,7 +2679,7 @@ export default function App() {
 
             <FollowUpTimer form={form} onSetField={set} />
 
-            <PastePanel onParsed={handleParsed} storedRaw={form.rawPastedData} />
+            <PastePanel key={form._key} onParsed={handleParsed} storedRaw={form.rawPastedData} />
 
             {/* Duplicate claim warning */}
             {dupWarning && (
