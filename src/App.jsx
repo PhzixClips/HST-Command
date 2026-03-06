@@ -3,7 +3,7 @@ import { T, inputStyle, labelStyle, btnStyle } from "./theme.js";
 import { generateTemplate, generateContactNarrative } from "./utils/templateGenerator.js";
 import { generateShopEmail, generateSubjectLine, generatePendingDocsEmail, generatePendingDocsSubject, PENDING_DOC_TYPES } from "./utils/emailGenerator.js";
 import { parseClaimData, GEMINI_MODELS, getSettings, saveSettings } from "./utils/aiParser.js";
-import { CHARGE_TYPES, isChargeDenied } from "./data/chargeTypes.js";
+import { CHARGE_TYPES, isChargeDenied, getDefaultAmount } from "./data/chargeTypes.js";
 import { LEGAL_CITATIONS } from "./data/legalCitations.js";
 import { calcMitigationCutoff, getDefaultMarketRate, lookupShopRate, isLateNotification, getDeniedFeesSummary } from "./utils/rules.js";
 import { daysBetween, formatMMDD, formatMMDDYYYY, toInputDate, fromInputDate, addBusinessDays } from "./utils/dates.js";
@@ -1979,6 +1979,110 @@ export default function App() {
     }
   }, [form.claimNumber, form.id]);
 
+  // ── Auto-fill shop fields from rate database ────────────────
+  const lastAutoFilledShop = useRef("");
+  useEffect(() => {
+    if (!form.shopName || form.shopName.length < 3) return;
+    if (lastAutoFilledShop.current === form.shopName.toLowerCase()) return;
+    const rateDb = getRates();
+    const match = lookupShopRate(form.shopName, rateDb);
+    if (!match) return;
+    lastAutoFilledShop.current = form.shopName.toLowerCase();
+    setForm(prev => {
+      const updates = {};
+      if (!prev.shopEmail && match.email) updates.shopEmail = match.email;
+      if (!prev.shopPhone && match.phone) updates.shopPhone = match.phone;
+      if (!prev.shopAddress && match.address) updates.shopAddress = match.address;
+      if (!prev.shopCity && match.city) updates.shopCity = match.city;
+      if (!prev.shopLicense && match.license) updates.shopLicense = match.license;
+      if (Object.keys(updates).length === 0) return prev;
+      return { ...prev, ...updates };
+    });
+  }, [form.shopName]);
+
+  // ── Auto-fill contact person from most recent shop contact ──
+  const lastAutoFilledContact = useRef("");
+  useEffect(() => {
+    if (!form.shopName || form.shopName.length < 3) return;
+    if (form.contact.contactPerson) return;
+    if (lastAutoFilledContact.current === form.shopName.toLowerCase()) return;
+    lastAutoFilledContact.current = form.shopName.toLowerCase();
+    const contacts = getShopContactsByName(form.shopName);
+    if (contacts.length === 0) return;
+    const mostRecent = contacts[0];
+    if (mostRecent.spokeTo) {
+      set("contact.contactPerson", mostRecent.spokeTo);
+    }
+  }, [form.shopName, form.contact.contactPerson]);
+
+  // ── Auto-calc mitigation cut-off when TL date changes ──────
+  useEffect(() => {
+    if (!form.tlDate) return;
+    const cutoff = calcMitigationCutoff(form.tlDate);
+    if (!cutoff) return;
+    setForm(prev => {
+      if (prev.mitigation.cutOffDate) return prev;
+      return {
+        ...prev,
+        mitigation: {
+          ...prev.mitigation,
+          cutOffDate: cutoff,
+          cutOffExplanation: prev.mitigation.cutOffExplanation || `3 days post-TL notice on ${formatMMDD(form.tlDate)}`,
+        },
+      };
+    });
+  }, [form.tlDate]);
+
+  // ── Auto-fill storage coverage dates from key dates + mitigation ──
+  useEffect(() => {
+    setForm(prev => {
+      const updates = {};
+      if (prev.storageStartDate && !prev.audit.storageStartDate) {
+        updates.storageStartDate = formatMMDD(prev.storageStartDate);
+      }
+      if (prev.mitigation.cutOffDate && !prev.audit.storageEndDate) {
+        updates.storageEndDate = formatMMDD(prev.mitigation.cutOffDate);
+      }
+      const startStr = updates.storageStartDate || prev.audit.storageStartDate;
+      const endStr = updates.storageEndDate || prev.audit.storageEndDate;
+      if (startStr && endStr && !prev.audit.approvedStorageDays) {
+        const days = daysBetween(prev.storageStartDate || startStr, prev.mitigation.cutOffDate || endStr);
+        if (days > 0) updates.approvedStorageDays = days;
+      }
+      if (Object.keys(updates).length === 0) return prev;
+      return { ...prev, audit: { ...prev.audit, ...updates } };
+    });
+  }, [form.storageStartDate, form.mitigation.cutOffDate]);
+
+  // ── Auto-generate contact narrative when data is ready ──────
+  const narrativeGenerated = useRef(false);
+  useEffect(() => {
+    if (narrativeGenerated.current) return;
+    if (!form.shopName || !form.contact.contactPerson) return;
+    if (form.contact.narrative) return;
+    if (!form.audit.approvedStorageRate) return;
+    narrativeGenerated.current = true;
+    const narrative = generateContactNarrative(form);
+    set("contact.narrative", narrative);
+  }, [form.shopName, form.contact.contactPerson, form.audit.approvedStorageRate]);
+
+  // Reset auto-fill refs when form is cleared
+  useEffect(() => {
+    if (!form.shopName && !form.claimNumber) {
+      narrativeGenerated.current = false;
+      lastAutoFilledShop.current = "";
+      lastAutoFilledContact.current = "";
+    }
+  }, [form.shopName, form.claimNumber]);
+
+  // ── Auto-default CSA time to CA timezone ────────────────────
+  useEffect(() => {
+    if (form.resolution.csaTime) return;
+    if (!form.resolution.approvedCharges) return;
+    const caTime = new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit", hour12: true });
+    set("resolution.csaTime", caTime);
+  }, [form.resolution.approvedCharges]);
+
   // Shop database prompts — watch for new/updated shop info
   useEffect(() => {
     if (!form.shopName || form.shopName.length < 3) { setShopPrompt(null); return; }
@@ -2129,6 +2233,80 @@ export default function App() {
     setForm(prev => {
       if (JSON.stringify(prev.audit.deniedFees) === JSON.stringify(denied)) return prev;
       return { ...prev, audit: { ...prev.audit, deniedFees: denied } };
+    });
+  }, [form.charges]);
+
+  // ── Auto-approve charges based on charge type rules ─────────
+  useEffect(() => {
+    if (!form.charges || form.charges.length === 0) return;
+    setForm(prev => {
+      const updates = {};
+      const noteUpdates = {};
+      let towTotal = 0, teardownTotal = 0, laborTotal = 0, otherTotal = 0;
+      let towNotes = [], teardownNotes = [], laborNotes = [], otherNotes = [];
+
+      for (const charge of prev.charges) {
+        if (charge.autoDenied || !charge.amount || charge.amount <= 0) continue;
+        const lower = charge.name.toLowerCase();
+        const defaultAmt = getDefaultAmount(charge.name);
+
+        // Determine approved amount
+        let approved;
+        if (defaultAmt === "billed") {
+          approved = charge.amount; // approve at billed price (tow, lien)
+        } else if (typeof defaultAmt === "number") {
+          approved = defaultAmt; // fixed rate (dolly $250, cleanup $250, pre-scan $65, extra equipment $250)
+        } else {
+          approved = charge.amount; // non-denied charges without rules: approve as billed
+        }
+
+        // Route to correct audit field
+        if (lower.includes("tow") || lower === "advance tow") {
+          towTotal += approved;
+          towNotes.push(defaultAmt === "billed" ? "Approved as billed" : charge.name);
+        } else if (lower.includes("teardown")) {
+          teardownTotal += approved;
+          teardownNotes.push("Approved as billed");
+        } else if (lower.includes("labor")) {
+          laborTotal += approved;
+          laborNotes.push("Approved as billed");
+        } else if (lower === "storage") {
+          // Storage handled separately by rate × days
+          continue;
+        } else {
+          // Everything else goes to "Other" (dolly, cleanup, pre-scan, lien, extra equipment, etc.)
+          otherTotal += approved;
+          if (defaultAmt === "billed") {
+            otherNotes.push(`${charge.name}: approved as billed`);
+          } else if (typeof defaultAmt === "number") {
+            otherNotes.push(`${charge.name}: $${defaultAmt}`);
+          } else {
+            otherNotes.push(`${charge.name}: approved as billed`);
+          }
+        }
+      }
+
+      // Only update if values actually changed
+      const auditUpdates = {};
+      if (towTotal > 0 && prev.audit.approvedTow !== towTotal) {
+        auditUpdates.approvedTow = towTotal;
+        auditUpdates.towNote = towNotes.join(", ");
+      }
+      if (teardownTotal > 0 && prev.audit.approvedTeardown !== teardownTotal) {
+        auditUpdates.approvedTeardown = teardownTotal;
+        auditUpdates.teardownNote = teardownNotes.join(", ");
+      }
+      if (laborTotal > 0 && prev.audit.approvedLabor !== laborTotal) {
+        auditUpdates.approvedLabor = laborTotal;
+        auditUpdates.laborNote = laborNotes.join(", ");
+      }
+      if (otherTotal > 0 && prev.audit.approvedOther !== otherTotal) {
+        auditUpdates.approvedOther = otherTotal;
+        auditUpdates.otherNote = otherNotes.join("; ");
+      }
+
+      if (Object.keys(auditUpdates).length === 0) return prev;
+      return { ...prev, audit: { ...prev.audit, ...auditUpdates } };
     });
   }, [form.charges]);
 

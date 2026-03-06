@@ -3,9 +3,10 @@
 // defaultAmount: pre-filled approved amount for charges with fixed rates
 export const CHARGE_TYPES = [
   { name: "Storage", denied: false, hasRate: true, hasDays: true, hasDateRange: true },
-  { name: "Advance Tow", denied: false },
+  { name: "Advance Tow", denied: false, approveAsBilled: true },
   { name: "Teardown", denied: false },
   { name: "Labor", denied: false },
+  { name: "Extra Equipment", denied: false, defaultAmount: 250 },
   { name: "Dolly", denied: false, defaultAmount: 250 },
   { name: "Clean Up", denied: false, defaultAmount: 250 },
   { name: "Pre-Scan", denied: false, defaultAmount: 65 },
