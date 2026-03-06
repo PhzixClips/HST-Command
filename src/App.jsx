@@ -2704,7 +2704,24 @@ export default function App() {
                   </Row>
                   <Row>
                     <Input label="City" value={form.shopCity} onChange={v => set("shopCity", v)} />
-                    <Input label="Phone" value={form.shopPhone} onChange={v => set("shopPhone", v)} />
+                    <div style={{ flex: 1, minWidth: 120 }}>
+                      <label style={labelStyle}>Phone</label>
+                      <div style={{ position: "relative" }}>
+                        <input
+                          type="text"
+                          value={form.shopPhone ?? ""}
+                          onChange={e => set("shopPhone", e.target.value)}
+                          style={{ ...inputStyle, fontSize: 12, padding: "8px 10px", paddingRight: 32 }}
+                        />
+                        {form.shopPhone && (
+                          <span
+                            onClick={() => { navigator.clipboard.writeText(form.shopPhone); }}
+                            title="Copy phone number"
+                            style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", cursor: "pointer", fontSize: 13, color: T.textDim, userSelect: "none" }}
+                          >&#128203;</span>
+                        )}
+                      </div>
+                    </div>
                   </Row>
                   <Row>
                     <Input label="License" value={form.shopLicense} onChange={v => set("shopLicense", v)} placeholder="e.g. valid 313676" />
