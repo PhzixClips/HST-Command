@@ -115,3 +115,33 @@ export function deleteShopContact(id) {
   safeSet(CONTACTS_KEY, log);
   return log;
 }
+
+// Shop Reputation — calculate stats from completed claims
+export function getShopReputation(shopName) {
+  if (!shopName) return null;
+  const templates = getTemplates();
+  const lower = shopName.toLowerCase();
+  const shopClaims = templates.filter(t =>
+    (t.shopName || "").toLowerCase() === lower && t.resolution?.approvedCharges > 0
+  );
+  if (shopClaims.length === 0) return null;
+
+  let totalBilled = 0;
+  let totalApproved = 0;
+  for (const t of shopClaims) {
+    const billed = (t.charges || []).reduce((s, c) => s + (parseFloat(c.amount) || 0), 0);
+    const approved = t.resolution?.approvedCharges || 0;
+    totalBilled += billed;
+    totalApproved += approved;
+  }
+  const totalSaved = Math.max(0, totalBilled - totalApproved);
+  const avgReduction = totalBilled > 0 ? ((totalSaved / totalBilled) * 100) : 0;
+
+  return {
+    claimCount: shopClaims.length,
+    totalBilled,
+    totalApproved,
+    totalSaved,
+    avgReduction: Math.round(avgReduction),
+  };
+}

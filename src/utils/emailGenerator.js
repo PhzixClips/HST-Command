@@ -3,6 +3,64 @@
 import { fmt, fmtDollar } from "./calculations.js";
 import { CHARGE_TYPES, isChargeDenied, getDefaultAmount } from "../data/chargeTypes.js";
 
+// ── Pending document types ──────────────────────────────────────
+export const PENDING_DOC_TYPES = [
+  { id: "tow-bill", label: "Tow Bill" },
+  { id: "lien-document", label: "Lien Sale Document" },
+  { id: "storage-agreement", label: "Signed Storage Agreement" },
+  { id: "gate-log", label: "Gate Log" },
+  { id: "itemized-invoice", label: "Itemized Invoice" },
+  { id: "bar-license", label: "BAR License" },
+  { id: "certified-letter", label: "Certified Letter Receipt" },
+  { id: "photos", label: "Vehicle Photos" },
+  { id: "repair-authorization", label: "Repair Authorization" },
+  { id: "teardown-authorization", label: "Teardown Authorization" },
+];
+
+// ── Pending documents email generator ───────────────────────────
+export function generatePendingDocsEmail(d, pendingDocs = [], tone = "firm") {
+  const T = TONE[tone] || TONE.firm;
+  const lines = [];
+  const contact = d.contact || {};
+  const person = contact.contactPerson || "";
+
+  // Greeting
+  lines.push(T.greeting(person));
+  lines.push("");
+
+  // Intro
+  lines.push(`I am currently reviewing claim ${d.claimNumber || "[claim #]"} for the ${[d.vehicleYear, d.vehicleMake, d.vehicleModel].filter(Boolean).join(" ") || "vehicle"} at your facility.`);
+  lines.push("");
+
+  // Document request
+  lines.push("In order to move forward with payment approval, we still need the following documentation:");
+  lines.push("");
+  for (const doc of pendingDocs) {
+    const docType = PENDING_DOC_TYPES.find(dt => dt.id === doc.id);
+    const label = docType ? docType.label : doc.label || doc.id;
+    lines.push(`  - ${label}`);
+  }
+  lines.push("");
+
+  // Soft urgency — no deadline, just "we can't cover more storage from here"
+  lines.push("Please be advised that without the above documentation we are unable to verify and process the charges on this claim. Any additional storage accruing beyond this point would not be covered under the insuring agreement, as we are unable to move forward with pickup or payment until proof of claim is provided.");
+  lines.push("");
+  lines.push("We truly appreciate your help getting these over to us so we can get this taken care of and payment sent out as quickly as possible!");
+  lines.push("");
+
+  // Sign-off
+  lines.push(T.signoff);
+
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// ── Pending docs subject line ────────────────────────────────────
+export function generatePendingDocsSubject(d) {
+  const claim = d.claimNumber || "";
+  const vehicle = [d.vehicleYear, (d.vehicleMake || "").toUpperCase(), (d.vehicleModel || "").toUpperCase()].filter(Boolean).join(" ");
+  return `Documents Needed — Claim ${claim}${vehicle ? ` | ${vehicle}` : ""}`;
+}
+
 // ── Subject line generator ──────────────────────────────────────
 export function generateSubjectLine(d) {
   const claim = d.claimNumber || "";
