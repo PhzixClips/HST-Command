@@ -75,10 +75,15 @@ export function generateTemplate(d) {
     lines.push(`Labor: ${fmtDollar(audit.approvedLabor)} (${audit.laborNote || "Authorized per verified shop labor request"})`);
   }
 
+  // Approved other charges (dolly, cleanup, pre-scan, lien, extra equipment, etc.)
+  if (parseFloat(audit.approvedOther) > 0) {
+    lines.push(`Other Approved: ${fmtDollar(audit.approvedOther)} (${audit.otherNote || "See breakdown"})`);
+  }
+
   // Denied fees
   const deniedNames = (audit.deniedFees || []).filter(Boolean);
   if (deniedNames.length > 0) {
-    lines.push(`Other Fees: $0.00 (Denied - ${deniedNames.join(", ")} ${audit.deniedFeesReason || "are standard business overhead per AB-2392"})`);
+    lines.push(`Denied Fees: $0.00 (${deniedNames.join(", ")} ${audit.deniedFeesReason || "— standard business overhead per AB-2392"})`);
   }
 
   const totalApproved = storageAmt +
@@ -150,6 +155,9 @@ export function generateContactNarrative(d) {
   }
   if (parseFloat(audit.approvedLabor) > 0) {
     narrative += `Labor is approved. `;
+  }
+  if (parseFloat(audit.approvedOther) > 0) {
+    narrative += `${audit.otherNote || "Other charges"} approved. `;
   }
   if (deniedNames.length > 0) {
     narrative += `Had to deny ${deniedNames.join(", ").toLowerCase()} — those fall under business overhead per AB-2392. `;

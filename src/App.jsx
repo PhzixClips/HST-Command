@@ -2261,10 +2261,11 @@ export default function App() {
         }
 
         // Route to correct audit field
-        if (lower.includes("tow") || lower === "advance tow") {
+        const normalized = lower.replace(/\s+/g, "");
+        if (normalized.includes("tow") || lower === "advance tow") {
           towTotal += approved;
           towNotes.push(defaultAmt === "billed" ? "Approved as billed" : charge.name);
-        } else if (lower.includes("teardown")) {
+        } else if (normalized.includes("teardown") || lower.includes("tear down")) {
           teardownTotal += approved;
           teardownNotes.push("Approved as billed");
         } else if (lower.includes("labor")) {
