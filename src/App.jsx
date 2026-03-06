@@ -1959,10 +1959,14 @@ function FollowUpToasts({ onGoToClaim }) {
 
 // ─── Main App ──────────────────────────────────────────────────
 export default function App() {
-  const [tab, setTab] = useState("home");
+  const [tab, setTab] = useState(() => {
+    try { return sessionStorage.getItem("hst-active-tab") || "home"; } catch { return "home"; }
+  });
   // Multi-claim tabs: array of { form, aiFields, label }
   const [claims, setClaims] = useState([{ form: createEmpty(), aiFields: [] }]);
-  const [activeClaimIdx, setActiveClaimIdx] = useState(0);
+  const [activeClaimIdx, setActiveClaimIdx] = useState(() => {
+    try { return parseInt(sessionStorage.getItem("hst-active-claim-idx")) || 0; } catch { return 0; }
+  });
   const previewRef = useRef(null);
   const [dupWarning, setDupWarning] = useState(null);
   const [shopPrompt, setShopPrompt] = useState(null); // { type, message, data }
@@ -2223,6 +2227,14 @@ export default function App() {
     }
   };
 
+  // Persist active tab and claim index to sessionStorage
+  useEffect(() => {
+    try { sessionStorage.setItem("hst-active-tab", tab); } catch {}
+  }, [tab]);
+  useEffect(() => {
+    try { sessionStorage.setItem("hst-active-claim-idx", String(activeClaimIdx)); } catch {}
+  }, [activeClaimIdx]);
+
   // Auto-save drafts to sessionStorage every 5 seconds
   useEffect(() => {
     const interval = setInterval(() => {
@@ -2239,6 +2251,8 @@ export default function App() {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].form) {
           setClaims(parsed);
+          // Clamp the restored active index to valid range
+          setActiveClaimIdx(prev => Math.min(prev, parsed.length - 1));
         }
       }
     } catch {}
@@ -2460,6 +2474,16 @@ export default function App() {
 
     setForm(next);
     setAiFields(filled);
+
+    // Auto-save to localStorage immediately after Smart Fill
+    const toSave = {
+      ...next,
+      id: next.id || crypto.randomUUID(),
+      status: "pending",
+    };
+    saveTemplate(toSave);
+    // Update form with the saved id so subsequent saves update the same record
+    setForm(prev => ({ ...prev, id: toSave.id, status: toSave.status }));
   };
 
   // Save

@@ -31,9 +31,18 @@ export const DENIED_CHARGE_NAMES = CHARGE_TYPES
 
 export function isChargeDenied(chargeName) {
   const lower = chargeName.toLowerCase();
-  return CHARGE_TYPES.some(
-    c => c.denied && c.name.toLowerCase() === lower
-  ) || [
+  // First check: if the name exactly matches an approved charge type, it's NOT denied
+  const exactApproved = CHARGE_TYPES.find(
+    c => !c.denied && c.name.toLowerCase() === lower
+  );
+  if (exactApproved) return false;
+  // Second check: if name contains an approved charge keyword (dolly, cleanup, etc.), NOT denied
+  const approvedKeywords = ["dolly", "clean up", "cleanup", "pre-scan", "prescan", "lien", "labor", "tow", "teardown", "tear down", "storage"];
+  if (approvedKeywords.some(kw => lower.includes(kw))) return false;
+  // Third check: exact match against denied charge types
+  if (CHARGE_TYPES.some(c => c.denied && c.name.toLowerCase() === lower)) return true;
+  // Fourth check: keyword match for denied fees
+  return [
     "admin", "forklift", "gate", "impound",
     "estimate", "inspection", "hookup", "hook up",
     "yard", "environmental", "release", "battery",

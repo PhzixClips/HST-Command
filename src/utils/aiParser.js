@@ -115,6 +115,9 @@ CRITICAL EXTRACTION RULES:
   * Pre-Scan
   * Lien
   * Labor
+  **COMBINED LINE ITEMS**: If the shop lumps multiple fees into one line (e.g. "Dolly/Estimate/Cleanup/Yard: $1,000"),
+  you MUST split them into SEPARATE charge entries. Each fee type gets its own entry in the charges array.
+  If the combined amount can't be split evenly, divide it equally among the sub-items.
   Look for charge breakdowns in ALL of these locations in the data:
   * IAA/CSAToday release notes with "Total Advance Charges Need Approval" sections
   * Lines formatted as "ChargeName: $ amount" or "ChargeName: $amount"
@@ -332,6 +335,50 @@ function extractChargesFromText(rawText) {
 }
 
 /**
+ * Split combined charge names like "Dolly/Estimate/Cleanup/Yard" into individual charges.
+ * Divides the total amount equally among sub-items.
+ */
+function splitCombinedCharges(charges) {
+  const result = [];
+  const knownNames = [
+    "storage", "advance tow", "towing", "teardown", "tear down",
+    "administrative fee", "admin fee", "extra equipment",
+    "estimate fee", "estimate", "gate fee", "impound fee",
+    "clean up", "cleanup", "dolly", "pre-scan", "lien",
+    "labor", "environmental fee", "release fee", "hook up",
+    "yard fee", "yard", "battery maintenance", "cover car",
+  ];
+
+  for (const charge of charges) {
+    const name = charge.name || "";
+    // Check if the name contains "/" or "&" separating multiple charge types
+    if (/[\/&]/.test(name) && name.length > 20) {
+      const parts = name.split(/[\/&,]+/).map(p => p.trim()).filter(Boolean);
+      // Only split if we recognize at least 2 of the parts as known charge names
+      const recognized = parts.filter(p =>
+        knownNames.some(kn => p.toLowerCase().includes(kn) || kn.includes(p.toLowerCase()))
+      );
+      if (recognized.length >= 2) {
+        const splitAmt = (charge.amount || 0) / parts.length;
+        for (const part of parts) {
+          // Normalize the part name to a canonical charge name
+          const canonical = knownNames.find(kn =>
+            part.toLowerCase().includes(kn) || kn.includes(part.toLowerCase())
+          );
+          const displayName = canonical
+            ? canonical.split(" ").map(w => w[0].toUpperCase() + w.slice(1)).join(" ")
+            : part;
+          result.push({ ...charge, name: displayName, amount: Math.round(splitAmt * 100) / 100 });
+        }
+        continue;
+      }
+    }
+    result.push(charge);
+  }
+  return result;
+}
+
+/**
  * Merge regex-extracted charges into AI-parsed charges.
  * Only adds charges that the AI missed (by name match).
  * If AI got an amount wrong vs regex, keep the AI amount (user can review).
@@ -374,6 +421,8 @@ function postProcess(parsed, rawText) {
   if (!parsed.iaaStock) {
     parsed.iaaStock = extractIAAStock(rawText, parsed.claimNumber, parsed.vin);
   }
+  // Split any combined charge lines (e.g. "Dolly/Estimate/Cleanup/Yard") into individual charges
+  parsed.charges = splitCombinedCharges(parsed.charges || []);
   // ALWAYS run charge extraction and merge — we can't afford to miss any charges
   const regexResult = extractChargesFromText(rawText);
   parsed.charges = mergeCharges(parsed.charges, regexResult);
@@ -388,7 +437,209 @@ function postProcess(parsed, rawText) {
   return parsed;
 }
 
-export async function parseClaimData(rawText) {
+// ── Simple hash for cache key ──────────────────────────────────
+function simpleHash(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
+  return hash.toString(36);
+}
+
+// ── In-memory + sessionStorage parse cache ─────────────────────
+const parseCache = new Map();
+const CACHE_STORAGE_KEY = "hst-parse-cache";
+
+function getCachedResult(rawText) {
+  const key = simpleHash(rawText.trim());
+  // Check in-memory first
+  if (parseCache.has(key)) return parseCache.get(key);
+  // Check sessionStorage
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(CACHE_STORAGE_KEY) || "{}");
+    if (stored[key]) {
+      parseCache.set(key, stored[key]);
+      return stored[key];
+    }
+  } catch {}
+  return null;
+}
+
+function setCachedResult(rawText, result) {
+  const key = simpleHash(rawText.trim());
+  parseCache.set(key, result);
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(CACHE_STORAGE_KEY) || "{}");
+    // Keep cache bounded — only store last 10 results
+    const keys = Object.keys(stored);
+    if (keys.length >= 10) delete stored[keys[0]];
+    stored[key] = result;
+    sessionStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(stored));
+  } catch {}
+}
+
+// ── Regex-only extraction for shop info ────────────────────────
+function extractShopInfo(rawText) {
+  const info = {};
+
+  // Shop/tow yard name — look for labeled patterns
+  const shopPatterns = [
+    /(?:shop|tow\s*yard|body\s*shop|collision)\s*(?:name)?\s*[:=]\s*(.+)/i,
+    /(?:vehicle\s+(?:is\s+)?(?:at|located|stored)\s+(?:at\s+)?)\s*(.+?)(?:\.|,|\n|$)/i,
+  ];
+  for (const pat of shopPatterns) {
+    const m = pat.exec(rawText);
+    if (m && m[1].trim().length > 2 && m[1].trim().length < 80) {
+      info.shopName = m[1].trim().replace(/[,.]$/, "");
+      break;
+    }
+  }
+
+  // Phone number
+  const phoneMatch = rawText.match(/(?:phone|ph|tel|#)\s*[:=]?\s*\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}/i);
+  if (phoneMatch) {
+    const digits = phoneMatch[0].match(/\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}/);
+    if (digits) info.shopPhone = digits[0];
+  }
+
+  // Email
+  const emailMatch = rawText.match(/[\w.+-]+@[\w.-]+\.\w{2,}/);
+  if (emailMatch) info.shopEmail = emailMatch[0];
+
+  // Address — look for street address patterns
+  const addrMatch = rawText.match(/\d+\s+[\w\s]+(?:st|ave|blvd|dr|rd|ln|ct|way|pkwy|hwy|street|avenue|boulevard|drive|road|lane|court)\b[^,\n]*(?:,\s*\w+)?\s*(?:,?\s*CA\s*\d{5})?/i);
+  if (addrMatch) info.shopAddress = addrMatch[0].trim();
+
+  // License
+  const licMatch = rawText.match(/(?:license|lic|bar|ard)\s*[:=#]?\s*(?:valid\s*)?([A-Z]{0,3}\d{5,12})/i);
+  if (licMatch) info.shopLicense = licMatch[1];
+
+  return info;
+}
+
+// ── Regex-only extraction for dates/events ─────────────────────
+function extractDatesFromText(rawText) {
+  const info = {};
+
+  // DoL / Date of Loss
+  const dolMatch = rawText.match(/(\d{2}\/\d{2}(?:\/\d{2,4})?)\s*(?:DoL|date\s*of\s*loss)/i) ||
+                   rawText.match(/(?:DoL|date\s*of\s*loss)\s*[:=]?\s*(\d{2}\/\d{2}(?:\/\d{2,4})?)/i);
+
+  // Total Loss date
+  const tlMatch = rawText.match(/(\d{2}\/\d{2}(?:\/\d{2,4})?)\s*(?:IV\s+)?(?:deemed\s+)?(?:total\s*loss|TL\b)/i) ||
+                  rawText.match(/(?:total\s*loss|TL)\s*[:=]?\s*(\d{2}\/\d{2}(?:\/\d{2,4})?)/i);
+  if (tlMatch) info.tlDate = tlMatch[1];
+
+  // Storage start date
+  const storageStartMatch = rawText.match(/(\d{2}\/\d{2}(?:\/\d{2,4})?)\s*(?:storage\s*start|vehicle\s*arrived)/i) ||
+                            rawText.match(/(?:storage\s*start|vehicle\s*arrived)\s*[:=]?\s*(\d{2}\/\d{2}(?:\/\d{2,4})?)/i);
+  if (storageStartMatch) info.storageStartDate = storageStartMatch[1];
+
+  // Mitigation letter
+  const mitMatch = rawText.match(/(?:mitigation|mit|storage\s*cut.?off)\s*(?:letter|ltr)?\s*(?:sent|mailed)\s*(?:by\s+(\w[\w\s]*?\w))?\s*(?:on\s+)?(\d{2}\/\d{2}(?:\/\d{2,4})?)?/i);
+  if (mitMatch) {
+    if (mitMatch[1]) info.mitSentBy = mitMatch[1].trim();
+    if (mitMatch[2]) info.mitSentDate = mitMatch[2];
+  }
+
+  // Insured name
+  const insuredMatch = rawText.match(/(?:insured|policyholder|claimant)\s*[:=]?\s*\(?([A-Z][a-z]+\s+[A-Z][a-z]+)/i);
+  if (insuredMatch) info.insuredName = insuredMatch[1];
+
+  // Appraiser name
+  const appMatch = rawText.match(/(?:appraiser|adjuster)\s+([A-Z][a-z]+\s+[A-Z][a-z]+)/i);
+  if (appMatch) info.adjusterName = appMatch[1];
+
+  return info;
+}
+
+// ── Regex-first: attempt full extraction without API ───────────
+function regexOnlyParse(rawText) {
+  const result = {
+    claimNumber: extractClaimNumber(rawText),
+    vin: extractVIN(rawText),
+    iaaStock: "",
+    shopName: "", shopAddress: "", shopPhone: "", shopEmail: "", shopLicense: "",
+    shopCity: "", shopAlias: "",
+    vehicleYear: "", vehicleMake: "", vehicleModel: "",
+    chargesBilledThrough: "",
+    charges: [],
+    fileReview: [],
+    mitigation: {},
+    contact: {},
+    tlDate: "", storageStartDate: "", claimReportDate: "",
+    adjusterName: "", insuredName: "", lossDescription: "",
+    appraiserMarketRate: 0,
+  };
+
+  result.iaaStock = extractIAAStock(rawText, result.claimNumber, result.vin);
+
+  // Shop info
+  const shopInfo = extractShopInfo(rawText);
+  Object.assign(result, shopInfo);
+
+  // Dates
+  const dateInfo = extractDatesFromText(rawText);
+  if (dateInfo.tlDate) result.tlDate = dateInfo.tlDate;
+  if (dateInfo.storageStartDate) result.storageStartDate = dateInfo.storageStartDate;
+  if (dateInfo.insuredName) result.insuredName = dateInfo.insuredName;
+  if (dateInfo.adjusterName) result.adjusterName = dateInfo.adjusterName;
+  if (dateInfo.mitSentBy) result.mitigation.sentBy = dateInfo.mitSentBy;
+  if (dateInfo.mitSentDate) result.mitigation.sentDate = dateInfo.mitSentDate;
+
+  // Charges
+  const chargeResult = extractChargesFromText(rawText);
+  result.charges = splitCombinedCharges(chargeResult.charges);
+  if (chargeResult.billedThrough) result.chargesBilledThrough = chargeResult.billedThrough;
+
+  // Appraiser rate
+  result.appraiserMarketRate = extractAppraiserRate(rawText);
+
+  // Vehicle — try "YYYY MAKE MODEL" pattern
+  const vehMatch = rawText.match(/(?:IV-?|vehicle[:=]?\s*)?(20[0-2]\d|19\d{2})\s+([A-Z][A-Za-z]+)\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?)/);
+  if (vehMatch) {
+    result.vehicleYear = vehMatch[1];
+    result.vehicleMake = vehMatch[2];
+    result.vehicleModel = vehMatch[3];
+  }
+
+  return result;
+}
+
+// Check if regex-only result has enough critical fields to skip API
+function isRegexSufficient(result) {
+  let score = 0;
+  if (result.claimNumber) score += 2;
+  if (result.iaaStock) score += 2;
+  if (result.vin) score += 1;
+  if (result.shopName) score += 2;
+  if (result.charges.length >= 2) score += 3;
+  if (result.tlDate) score += 1;
+  if (result.storageStartDate) score += 1;
+  if (result.vehicleYear) score += 1;
+  // Need at least 10/13 points to skip AI
+  return score >= 10;
+}
+
+export async function parseClaimData(rawText, { forceAI = false } = {}) {
+  // Check cache first — exact same paste = instant result, zero API cost
+  const cached = getCachedResult(rawText);
+  if (cached) {
+    console.log("[HST] Cache hit — skipping API call");
+    return cached;
+  }
+
+  // Try regex-first extraction (free, instant)
+  if (!forceAI) {
+    const regexResult = regexOnlyParse(rawText);
+    if (isRegexSufficient(regexResult)) {
+      console.log("[HST] Regex extraction sufficient — skipping API call");
+      setCachedResult(rawText, regexResult);
+      return regexResult;
+    }
+  }
+
+  // Fall through to Gemini API
   const settings = getSettings();
   const key = settings.apiKey || import.meta.env.VITE_GEMINI_KEY;
   const model = settings.model || "gemini-2.0-flash";
@@ -430,7 +681,9 @@ export async function parseClaimData(rawText) {
   try {
     const parsed = JSON.parse(cleaned);
     // Run deterministic fallbacks for critical fields the AI often misses
-    return postProcess(parsed, rawText);
+    const result = postProcess(parsed, rawText);
+    setCachedResult(rawText, result);
+    return result;
   } catch (e) {
     console.error("Failed to parse AI response:", cleaned);
     throw new Error("AI returned invalid data. Please try again or fill the form manually.");
