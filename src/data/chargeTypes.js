@@ -14,6 +14,7 @@ export const CHARGE_TYPES = [
   { name: "Administrative Fee", denied: true },
   { name: "Gate Fee", denied: true },
   { name: "Estimate Fee", denied: true },
+  { name: "Impound Fee", denied: true },
   { name: "Vehicle Inspection", denied: true },
   { name: "Hook Up", denied: true },
   { name: "Yard Fee", denied: true },
@@ -33,7 +34,7 @@ export function isChargeDenied(chargeName) {
   return CHARGE_TYPES.some(
     c => c.denied && c.name.toLowerCase() === lower
   ) || [
-    "admin", "forklift", "gate",
+    "admin", "forklift", "gate", "impound",
     "estimate", "inspection", "hookup", "hook up",
     "yard", "environmental", "release", "battery",
     "cover car",
@@ -41,8 +42,13 @@ export function isChargeDenied(chargeName) {
 }
 
 export function getDefaultAmount(chargeName) {
-  const lower = chargeName.toLowerCase();
-  const match = CHARGE_TYPES.find(c => c.name.toLowerCase() === lower);
+  const lower = chargeName.toLowerCase().trim();
+  const normalized = lower.replace(/\s+/g, "");
+  const match = CHARGE_TYPES.find(c => {
+    const cLower = c.name.toLowerCase();
+    const cNorm = cLower.replace(/\s+/g, "");
+    return cLower === lower || cNorm === normalized || lower.includes(cLower) || cLower.includes(lower);
+  });
   if (!match) return null;
   if (match.defaultAmount) return match.defaultAmount;
   if (match.approveAsBilled) return "billed";
