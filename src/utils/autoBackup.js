@@ -53,6 +53,7 @@ export function buildBackup() {
     rates: read("hst-shop-rates", []),
     settings,
     contacts: read("hst-shop-contacts", []),
+    masterImport: read("hst-master-import", null),
   };
 }
 

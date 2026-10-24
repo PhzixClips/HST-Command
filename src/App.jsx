@@ -11,6 +11,7 @@ import { daysBetween, formatMMDD, formatMMDDYYYY, toInputDate, fromInputDate, ad
 import { calcTotalBilled, calcApprovedStorage, calcTotalApproved, calcDisputed, fmt, fmtDollar } from "./utils/calculations.js";
 import { getTemplates, saveTemplate, deleteTemplate, getRates, saveRates, addRates, deleteRate, addShopContact, getShopContactsByName, deleteShopContact, getShopReputation, exportAllData, importAllData } from "./utils/storage.js";
 import { DEFAULT_SHOPS } from "./data/defaultShops.js";
+import { parseMasterSheet, getMasterImport, clearMasterImport, computeScoreboard, getShopHistoryFromMaster } from "./utils/masterInsights.js";
 import { getBackupStatus, getLastBackup, runAutoBackup, chooseBackupFolder, resumeBackups, stopBackups, getLatestBackupFile } from "./utils/autoBackup.js";
 import { copyMasterSheetRow, exportToMasterSheet, buildMasterSheetRow } from "./utils/masterSheet.js";
 import { parseTemplate } from "./utils/templateParser.js";
@@ -1807,6 +1808,181 @@ function RateDatabaseView() {
   );
 }
 
+// ─── Scoreboard (from the master sheet) ────────────────────────
+function Stat({ value, label, color = T.text, big = false }) {
+  return (
+    <div style={{ background: T.inputBg, border: `1px solid ${T.border}`, borderRadius: 6, padding: "12px 14px", minWidth: 130, flex: 1 }}>
+      <div style={{ color, fontSize: big ? 24 : 18, fontWeight: 700, fontFamily: T.font, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      <div style={{ color: T.textDim, fontSize: 9, letterSpacing: 1, fontFamily: T.font, marginTop: 4 }}>{label}</div>
+    </div>
+  );
+}
+
+const monthLabel = (ym) => {
+  const [y, m] = ym.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+};
+
+function ScoreboardView() {
+  const [data, setData] = useState(getMasterImport);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
+
+  const load = async (file) => {
+    if (!file) return;
+    setBusy(true); setError("");
+    try { setData(await parseMasterSheet(file)); } catch (e) { setError(e.message); }
+    setBusy(false);
+  };
+
+  const s = data ? computeScoreboard(data.rows) : null;
+  const maxMonth = s ? Math.max(1, ...s.monthly.map(m => m.saved)) : 1;
+  const cell = { padding: "6px 8px", fontSize: 12, fontFamily: T.font, borderBottom: `1px solid ${T.border}` };
+  const num = { ...cell, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+
+  const picker = (
+    <label style={{ ...btnStyle(T.accent), display: "inline-block", cursor: "pointer" }}>
+      {busy ? "READING..." : data ? "UPDATE FROM MASTER SHEET" : "CHOOSE MASTER SHEET"}
+      <input type="file" accept=".xlsx,.xls,.xlsm,.csv" style={{ display: "none" }}
+        onChange={e => { load(e.target.files?.[0]); e.target.value = ""; }} />
+    </label>
+  );
+
+  return (
+    <div style={{ maxWidth: 900 }}
+      onDragOver={e => { e.preventDefault(); setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={e => { e.preventDefault(); setDragging(false); load(e.dataTransfer.files?.[0]); }}>
+
+      {!data && (
+        <Section title="SCOREBOARD" accent={T.accent}>
+          <div style={{ border: `2px dashed ${dragging ? T.accent : T.border}`, borderRadius: 8, padding: 32, textAlign: "center" }}>
+            <div style={{ color: T.text, fontSize: 14, fontFamily: T.font, marginBottom: 6 }}>Drop your master sheet here</div>
+            <div style={{ color: T.textDim, fontSize: 11, fontFamily: T.font, marginBottom: 16, lineHeight: 1.6 }}>
+              See dollars saved, shop history, and claims that have been open longest.<br />
+              The file is read in this browser only. Nothing is uploaded.
+            </div>
+            {picker}
+          </div>
+          {error && <div style={{ color: T.red, fontSize: 11, fontFamily: T.font, marginTop: 10 }}>{error}</div>}
+        </Section>
+      )}
+
+      {s && (
+        <>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ color: T.textDim, fontSize: 11, fontFamily: T.font }}>
+              From <b style={{ color: T.text }}>{data.fileName}</b> · {data.rows.length} claims · updated {new Date(data.importedAt).toLocaleDateString()}
+              {dragging && <span style={{ color: T.accent }}> · drop to update</span>}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {picker}
+              <Btn small color={T.textDim} onClick={() => { if (confirm("Remove the imported master sheet data from the app?")) { clearMasterImport(); setData(null); } }}>CLEAR</Btn>
+            </div>
+          </div>
+          {error && <div style={{ color: T.red, fontSize: 11, fontFamily: T.font, marginBottom: 10 }}>{error}</div>}
+
+          <Section title="SAVINGS" accent={T.accent}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+              <Stat big color={T.success} value={fmtDollar(s.year.saved)} label={`SAVED IN ${new Date().getFullYear()}`} />
+              <Stat value={fmtDollar(s.month.saved)} label="SAVED THIS MONTH" />
+              <Stat value={fmtDollar(s.allTime.saved)} label="SAVED ALL TIME" />
+            </div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <Stat value={s.allTime.count} label="CLAIMS CLOSED" />
+              <Stat value={`${s.allTime.reduction}%`} label="AVG REDUCTION" />
+              <Stat value={s.allTime.avgDays != null ? `${s.allTime.avgDays} days` : "—"} label="AVG TIME TO CLOSE" />
+              <Stat value={fmtDollar(s.allTime.billed)} label="TOTAL BILLED" />
+            </div>
+          </Section>
+
+          {s.monthly.length > 0 && (
+            <Section title="SAVED BY MONTH" accent={T.accent}>
+              {s.monthly.map(m => (
+                <div key={m.month} style={{ display: "grid", gridTemplateColumns: "60px 1fr 90px 50px", gap: 10, alignItems: "center", marginBottom: 6, fontFamily: T.font, fontSize: 12 }}>
+                  <span style={{ color: T.textDim }}>{monthLabel(m.month)}</span>
+                  <div style={{ background: T.inputBg, borderRadius: 3, height: 14 }}>
+                    <div style={{ width: `${(m.saved / maxMonth) * 100}%`, background: T.accent, height: "100%", borderRadius: 3, minWidth: m.saved > 0 ? 3 : 0 }} />
+                  </div>
+                  <span style={{ color: T.text, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmtDollar(m.saved)}</span>
+                  <span style={{ color: T.textDim, textAlign: "right" }}>{m.count} cl.</span>
+                </div>
+              ))}
+            </Section>
+          )}
+
+          <Section title={`OPEN LONGEST (${s.openCount})`} accent={T.amber}>
+            {s.aging.length === 0 ? (
+              <div style={{ color: T.textDim, fontSize: 12, fontFamily: T.font }}>No open claims on the sheet.</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead><tr style={{ color: T.textDim }}>
+                    <th style={{ ...cell, textAlign: "left" }}>CLAIM</th><th style={{ ...cell, textAlign: "left" }}>SHOP</th>
+                    <th style={{ ...cell, textAlign: "left" }}>STATUS</th><th style={num}>BILLED</th><th style={num}>OPEN</th>
+                  </tr></thead>
+                  <tbody>{s.aging.slice(0, 15).map(r => (
+                    <tr key={r.claim}>
+                      <td style={cell}>{r.claim}</td><td style={cell}>{r.shop}</td>
+                      <td style={{ ...cell, color: T.textDim }}>{r.status}</td>
+                      <td style={num}>{fmtDollar(r.billed)}</td>
+                      <td style={{ ...num, color: r.age > 30 ? T.red : r.age > 14 ? T.amber : T.text }}>{r.age != null ? `${r.age}d` : "—"}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            )}
+          </Section>
+
+          {s.topShops.length > 0 && (
+            <Section title="SHOPS BY DOLLARS SAVED" accent={T.accent} defaultOpen={false}>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead><tr style={{ color: T.textDim }}>
+                    <th style={{ ...cell, textAlign: "left" }}>SHOP</th><th style={num}>CLAIMS</th><th style={num}>SAVED</th>
+                    <th style={num}>REDUCTION</th><th style={num}>AVG DAYS</th>
+                  </tr></thead>
+                  <tbody>{s.topShops.map(sh => (
+                    <tr key={sh.name}>
+                      <td style={cell}>{sh.name}</td><td style={num}>{sh.count}</td><td style={num}>{fmtDollar(sh.saved)}</td>
+                      <td style={num}>{sh.reduction}%</td><td style={num}>{sh.avgDays ?? "—"}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            </Section>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function MasterShopHistory({ shopName }) {
+  const h = getShopHistoryFromMaster(shopName);
+  if (!h) return null;
+  const tip = h.reduction >= 40
+    ? `You've cut this shop's bills by ${h.reduction}% on average. Expect pushback, but they usually settle.`
+    : h.reduction <= 10
+      ? `This shop's bills have mostly been paid close to in full (${h.reduction}% average reduction).`
+      : null;
+  return (
+    <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 10, paddingTop: 10 }}>
+      <div style={{ color: T.textDim, fontSize: 9, letterSpacing: 1, fontFamily: T.font, marginBottom: 6 }}>FROM YOUR MASTER SHEET</div>
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontFamily: T.font }}>
+        {[[h.count, "CLAIMS"], [`${h.reduction}%`, "AVG REDUCTION"], [fmtDollar(h.saved), "SAVED"], [h.avgDays != null ? `${h.avgDays}d` : "—", "AVG TO CLOSE"]].map(([v, l]) => (
+          <div key={l}><div style={{ color: T.accent, fontSize: 15, fontWeight: 700 }}>{v}</div><div style={{ color: T.textDim, fontSize: 8, letterSpacing: 1 }}>{l}</div></div>
+        ))}
+      </div>
+      <div style={{ marginTop: 8, fontSize: 11, fontFamily: T.font, color: T.textDim }}>
+        Last {h.recent.length}: {h.recent.map(r => `${fmtDollar(r.billed)} → ${fmtDollar(r.approved)}`).join(" · ")}
+      </div>
+      {tip && <div style={{ color: T.amber, fontSize: 10, fontFamily: T.font, marginTop: 6 }}>{tip}</div>}
+    </div>
+  );
+}
+
 // ─── Automatic Backup Controls ─────────────────────────────────
 function useBackupStatus() {
   const [status, setStatus] = useState({ state: "loading", folder: null });
@@ -3260,6 +3436,7 @@ export default function App() {
     { key: "home", label: "Home" },
     { key: "new", label: "New Template" },
     { key: "history", label: "History" },
+    { key: "scoreboard", label: "Scoreboard" },
     { key: "rates", label: "Rate Database" },
     { key: "settings", label: "Settings" },
   ];
@@ -3546,6 +3723,7 @@ export default function App() {
                     </div>
                   )}
                   <ShopReputationBadge shopName={form.shopName} />
+                  <MasterShopHistory shopName={form.shopName} />
                 </Section>
 
                 {/* Charges */}
@@ -3805,6 +3983,9 @@ export default function App() {
 
         {/* ─── HISTORY TAB ─── */}
         {tab === "history" && <HistoryList onLoad={handleLoad} />}
+
+        {/* ─── SCOREBOARD TAB ─── */}
+        {tab === "scoreboard" && <ScoreboardView />}
 
         {/* ─── RATE DATABASE TAB ─── */}
         {tab === "rates" && <RateDatabaseView />}

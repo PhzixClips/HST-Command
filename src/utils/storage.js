@@ -187,6 +187,7 @@ export function importAllData(file) {
           safeSet(KEYS.SETTINGS, { ...data.settings, apiKey: data.settings.apiKey || current.apiKey });
         }
         if (data.contacts) { safeSet("hst-shop-contacts", data.contacts); }
+        if (data.masterImport) { safeSet("hst-master-import", data.masterImport); }
         resolve({ claimCount: count, exportedAt: data._exportedAt });
       } catch (e) {
         reject(new Error("Invalid backup file: " + e.message));
