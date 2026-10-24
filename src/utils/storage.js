@@ -181,7 +181,11 @@ export function importAllData(file) {
         let count = 0;
         if (data.templates) { safeSet(KEYS.TEMPLATES, data.templates); count += data.templates.length; }
         if (data.rates) { safeSet(KEYS.RATES, data.rates); }
-        if (data.settings) { safeSet(KEYS.SETTINGS, data.settings); }
+        if (data.settings) {
+          // Auto-backups omit the API key; keep the one already saved here.
+          const current = safeGet(KEYS.SETTINGS, {});
+          safeSet(KEYS.SETTINGS, { ...data.settings, apiKey: data.settings.apiKey || current.apiKey });
+        }
         if (data.contacts) { safeSet("hst-shop-contacts", data.contacts); }
         resolve({ claimCount: count, exportedAt: data._exportedAt });
       } catch (e) {

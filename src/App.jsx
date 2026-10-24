@@ -11,6 +11,7 @@ import { daysBetween, formatMMDD, formatMMDDYYYY, toInputDate, fromInputDate, ad
 import { calcTotalBilled, calcApprovedStorage, calcTotalApproved, calcDisputed, fmt, fmtDollar } from "./utils/calculations.js";
 import { getTemplates, saveTemplate, deleteTemplate, getRates, saveRates, addRates, deleteRate, addShopContact, getShopContactsByName, deleteShopContact, getShopReputation, exportAllData, importAllData } from "./utils/storage.js";
 import { DEFAULT_SHOPS } from "./data/defaultShops.js";
+import { getBackupStatus, getLastBackup, runAutoBackup, chooseBackupFolder, resumeBackups, stopBackups, getLatestBackupFile } from "./utils/autoBackup.js";
 import { copyMasterSheetRow, exportToMasterSheet, buildMasterSheetRow } from "./utils/masterSheet.js";
 import { parseTemplate } from "./utils/templateParser.js";
 
@@ -1806,6 +1807,118 @@ function RateDatabaseView() {
   );
 }
 
+// ─── Automatic Backup Controls ─────────────────────────────────
+function useBackupStatus() {
+  const [status, setStatus] = useState({ state: "loading", folder: null });
+  const refresh = useCallback(() => { getBackupStatus().then(setStatus).catch(() => {}); }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+  return [status, refresh];
+}
+
+function fmtLastBackup() {
+  const last = getLastBackup();
+  if (!last) return "never";
+  const d = new Date(last);
+  return d.toLocaleDateString() + " " + d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function AutoBackupControls() {
+  const [status, refresh] = useBackupStatus();
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const act = async (fn) => {
+    setBusy(true); setMsg("");
+    try { await fn(); } catch (e) { if (e?.name !== "AbortError") setMsg(e.message || String(e)); }
+    setBusy(false); refresh();
+  };
+
+  const restoreLatest = () => act(async () => {
+    const file = await getLatestBackupFile();
+    if (!file) { setMsg("No backups found in that folder yet."); return; }
+    if (!confirm(`Restore from ${file.name}? This replaces the claims, shop rates, and contacts currently in the app.`)) return;
+    const result = await importAllData(file);
+    alert(`Restored ${result.claimCount} claims from ${file.name}.`);
+    window.location.reload();
+  });
+
+  const text = { color: T.textDim, fontSize: 11, fontFamily: T.font, lineHeight: 1.6, marginBottom: 10 };
+
+  return (
+    <div style={{ marginBottom: 16, paddingBottom: 14, borderBottom: `1px solid ${T.border}` }}>
+      <label style={labelStyle}>AUTOMATIC BACKUPS</label>
+      {status.state === "fallback" && (
+        <div style={text}>
+          This browser can't save to a folder, so a backup file downloads once a week instead.
+          Use Chrome or Edge for automatic folder backups. Last backup: {fmtLastBackup()}.
+        </div>
+      )}
+      {status.state === "off" && (
+        <>
+          <div style={text}>
+            Pick a folder (OneDrive or Documents works well) and the app saves a backup there
+            automatically: one file per day, last 7 days kept. Your Gemini API key is never included.
+          </div>
+          <Btn onClick={() => act(chooseBackupFolder)} color={T.accent} disabled={busy}>CHOOSE BACKUP FOLDER</Btn>
+        </>
+      )}
+      {status.state === "needs-permission" && (
+        <>
+          <div style={text}>
+            Backups to <b style={{ color: T.text }}>{status.folder}</b> are paused. The browser needs you to
+            allow access again after a restart. Last backup: {fmtLastBackup()}.
+          </div>
+          <Btn onClick={() => act(resumeBackups)} color={T.amber} disabled={busy}>RESUME BACKUPS</Btn>
+        </>
+      )}
+      {status.state === "active" && (
+        <>
+          <div style={text}>
+            <span style={{ color: T.success }}>On.</span> Saving to <b style={{ color: T.text }}>{status.folder}</b>.
+            Last backup: {fmtLastBackup()}.
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Btn onClick={() => act(runAutoBackup)} color={T.accent} disabled={busy} small>BACK UP NOW</Btn>
+            <Btn onClick={restoreLatest} color={T.amber} disabled={busy} small>RESTORE LATEST</Btn>
+            <Btn onClick={() => act(chooseBackupFolder)} color={T.textDim} disabled={busy} small>CHANGE FOLDER</Btn>
+            <Btn onClick={() => act(stopBackups)} color={T.red} disabled={busy} small>TURN OFF</Btn>
+          </div>
+        </>
+      )}
+      {msg && <div style={{ color: T.red, fontSize: 11, fontFamily: T.font, marginTop: 8 }}>{msg}</div>}
+    </div>
+  );
+}
+
+function BackupBanner({ onOpenSettings }) {
+  const [status, refresh] = useBackupStatus();
+  const [hidden, setHidden] = useState(() => {
+    try { return sessionStorage.getItem("hst-backup-banner-hidden") === "1"; } catch { return false; }
+  });
+  if (hidden || (status.state !== "off" && status.state !== "needs-permission")) return null;
+
+  const hide = () => {
+    try { sessionStorage.setItem("hst-backup-banner-hidden", "1"); } catch {}
+    setHidden(true);
+  };
+  const paused = status.state === "needs-permission";
+
+  return (
+    <div style={{ background: T.cardBg, borderBottom: `1px solid ${T.border}`, padding: "8px 20px", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", fontSize: 12, fontFamily: T.font }}>
+      <span style={{ color: T.amber }}>●</span>
+      <span style={{ color: T.text, flex: 1, minWidth: 200 }}>
+        {paused
+          ? `Backups to ${status.folder} are paused. One click turns them back on.`
+          : "Your claims are only saved in this browser. Turn on automatic backups so nothing gets lost."}
+      </span>
+      {paused
+        ? <Btn small color={T.amber} onClick={async () => { try { await resumeBackups(); } catch {} refresh(); }}>RESUME</Btn>
+        : <Btn small color={T.accent} onClick={onOpenSettings}>SET UP</Btn>}
+      <Btn small color={T.textDim} onClick={hide}>LATER</Btn>
+    </div>
+  );
+}
+
 // ─── Settings Panel ────────────────────────────────────────────
 function SettingsPanel() {
   const [settings, setSettings] = useState(getSettings);
@@ -1901,6 +2014,8 @@ function SettingsPanel() {
       </Section>
 
       <Section title="DATA BACKUP" accent={T.amber}>
+        <AutoBackupControls />
+        <label style={labelStyle}>MANUAL BACKUP</label>
         <div style={{ color: T.textDim, fontSize: 11, fontFamily: T.font, marginBottom: 10, lineHeight: 1.6 }}>
           Export all claims, shop rates, contacts, and settings as a JSON file. Import to restore.
         </div>
@@ -2715,6 +2830,15 @@ export default function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [tab]);
 
+  // Automatic backups: on load, every 15 minutes, and when the tab is hidden
+  useEffect(() => {
+    runAutoBackup();
+    const interval = setInterval(runAutoBackup, 15 * 60 * 1000);
+    const onHide = () => { if (document.visibilityState === "hidden") runAutoBackup(); };
+    document.addEventListener("visibilitychange", onHide);
+    return () => { clearInterval(interval); document.removeEventListener("visibilitychange", onHide); };
+  }, []);
+
   // Auto-save drafts to sessionStorage every 5 seconds
   useEffect(() => {
     const interval = setInterval(() => {
@@ -3167,6 +3291,7 @@ export default function App() {
         }
       `}</style>
       <FollowUpToasts onGoToClaim={(claim) => { handleLoad(claim); }} />
+      <BackupBanner onOpenSettings={() => setTab("settings")} />
       {/* Header */}
       <div className="hst-header" style={{ borderBottom: `1px solid ${T.border}`, padding: "14px 20px", background: T.cardBg, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
