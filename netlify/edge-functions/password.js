@@ -15,9 +15,10 @@ export default async (request, context) => {
   const header = request.headers.get("authorization") || "";
   if (header.startsWith("Basic ")) {
     try {
-      const decoded = atob(header.slice(6));
-      const password = decoded.slice(decoded.indexOf(":") + 1);
-      if (safeEqual(password, expected)) return context.next();
+      const bytes = Uint8Array.from(atob(header.slice(6).trim()), c => c.charCodeAt(0));
+      const decoded = new TextDecoder().decode(bytes);
+      const password = decoded.slice(decoded.indexOf(":") + 1).trim();
+      if (safeEqual(password, expected.trim())) return context.next();
     } catch {
       // malformed header, fall through to the prompt
     }
